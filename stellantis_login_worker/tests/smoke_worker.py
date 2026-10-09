@@ -123,7 +123,7 @@ async def main() -> int:
         await client.post("/", json=dict(CREDS, timeout_page=5))
         check(calls[-1]["timeout_s"] == 10.0, "absurdly small value clamped to 10 s")
         await client.post("/", json=dict(CREDS, timeout_page=9_000_000))
-        check(calls[-1]["timeout_s"] == 300.0, "absurdly large value clamped to 300 s")
+        check(calls[-1]["timeout_s"] == 240.0, "absurdly large value clamped to 240 s")
 
         print("bad requests")
         for missing in ("url", "email", "password"):
@@ -139,13 +139,13 @@ async def main() -> int:
         res = await client.post("/", json=dict(CREDS, password="wrong"))
         body = await res.json()
         check(res.status == 400, "rejected login -> 400")
-        check("rejected" in body.get("message", ""), "reason is passed on")
+        check("did not complete" in body.get("message", ""), "safe failure message returned")
         check("code" not in body or body["code"] == 400, "no authorization code in an error body")
 
         res = await client.post("/", json=dict(CREDS, password="boom"))
         body = await res.json()
         check(res.status == 500, "unexpected error -> 500")
-        check("chromium vanished" in body.get("message", ""), "error type and text reported")
+        check("chromium vanished" not in body.get("message", ""), "raw exception text not disclosed")
 
         print("concurrency")
         gate = asyncio.Event()
@@ -166,8 +166,8 @@ async def main() -> int:
         second = asyncio.ensure_future(client.post("/", json=CREDS))
         await asyncio.sleep(0.1)
         gate.set()
-        for res in await asyncio.gather(first, second):
-            check(res.status == 200, "queued request answered with 200")
+        results = await asyncio.gather(first, second)
+        check(sorted(res.status for res in results) == [200, 429], "concurrent login is rejected without queueing")
         check(not overlap, "only one login runs at a time")
 
     await discovery_checks()

@@ -48,6 +48,44 @@ class OauthBrowserError(RuntimeError):
     pass
 
 
+async def _login_response_failure(response) -> str | None:
+    """Read only numeric login status; never expose response bodies or URLs."""
+    if urlsplit(response.url).path.rstrip("/").lower() != "/accounts.login":
+        return None
+    if response.status >= 400:
+        return f"Login endpoint returned HTTP {int(response.status)}"
+    try:
+        payload = await asyncio.wait_for(response.json(), 5)
+    except Exception:  # Malformed/non-JSON response is not proof of login rejection.
+        return None
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("errorCode")
+    if type(code) is int and 0 < code <= 999999:
+        return f"Login endpoint returned error {code}; manual sign-in may be required"
+    return None
+
+
+async def _wait_login_result(code, failure, consent, timeout_s):
+    """Keep watching failures after consent; use a single remaining deadline."""
+    watchers = {code, failure, consent}
+    try:
+        async with asyncio.timeout(timeout_s):
+            while True:
+                await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
+                if failure.done():
+                    raise OauthBrowserError(failure.result())
+                if code.done():
+                    return code.result()
+                if consent.done():
+                    consent.result()
+                    watchers.discard(consent)
+    finally:
+        if not consent.done():
+            consent.cancel()
+        await asyncio.gather(consent, return_exceptions=True)
+
+
 def _code_from_url(url: str) -> str | None:
     if not url or not url.lower().startswith(APP_SCHEME_PREFIX):
         return None
@@ -61,7 +99,7 @@ def _redact(url: str) -> str:
         return ""
     parts = urlsplit(url)
     keys = "&".join(f"{k}=…" for k in parse_qs(parts.query)) if parts.query else ""
-    return parts._replace(query=keys).geturl()
+    return parts._replace(query=keys, fragment="…" if parts.fragment else "").geturl()
 
 
 async def _bounded(coro, timeout: float, what: str) -> None:
@@ -105,27 +143,28 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
 
     failure_future: asyncio.Future[str] = loop.create_future()
 
-    async def log_body(response) -> None:
-        # The IdP's own login step: its JSON answer carries the failure reason.
-        try:
-            text = _redact_tokens(await response.text())
-        except Exception as err:  # noqa: BLE001
-            text = f"<unreadable: {err}>"
-        _LOGGER.debug("authenticate -> %s %s", response.status, text[:800])
-        if on_event:
-            on_event(f"authenticate {response.status}", text[:300])
+    response_tasks = set()
+
+    async def inspect_login_response(response):
+        reason = await _login_response_failure(response)
+        if reason and not failure_future.done():
+            _LOGGER.warning("%s", reason)
+            failure_future.set_result(reason)
 
     def on_response(response) -> None:
         if 300 <= response.status < 400:
             seen("response-location", response.headers.get("location", ""))
-        if "/json/authenticate" in response.url:
-            loop.create_task(log_body(response))
+        if urlsplit(response.url).path.rstrip("/").lower() == "/accounts.login":
+            task = loop.create_task(inspect_login_response(response))
+            response_tasks.add(task)
+            task.add_done_callback(response_tasks.discard)
 
     def on_navigated(frame) -> None:
         seen("framenavigated", frame.url)
         if "failedlogin" in frame.url.lower() and not failure_future.done():
-            failure_future.set_result(frame.url)
+            failure_future.set_result("Identity provider rejected the login")
 
+    phase = "browser_start"
     pw = await async_playwright().start()
     browser = None
     page = None
@@ -138,54 +177,45 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
         page.on("requestfailed", lambda r: seen("requestfailed", r.url))
         page.on("response", on_response)
         page.on("framenavigated", on_navigated)
-        page.on("console", lambda m: _LOGGER.debug("console %s: %s", m.type, m.text[:300]))
+
 
         ms = int(timeout_s * 1000)
         _LOGGER.debug("Opening OAuth page")
+        phase = "open_authorization"
         await page.goto(oauth_url, wait_until="domcontentloaded", timeout=ms)
+        phase = "wait_login_form"
         await page.wait_for_selector(SEL_EMAIL, timeout=ms)
         await page.fill(SEL_EMAIL, email)
         await page.fill(SEL_PASSWORD, password)
+        phase = "submit_credentials"
         await page.click(SEL_SUBMIT)
+        phase = "wait_login_result"
         _LOGGER.debug("Credentials submitted, waiting for consent form or app redirect")
 
         async def wait_consent() -> None:
+            nonlocal phase
             await page.wait_for_selector(SEL_AUTHORIZE, timeout=ms)
+            phase = "submit_consent"
             await page.click(SEL_AUTHORIZE)
+            phase = "wait_app_redirect"
             _LOGGER.debug("Consent submitted, waiting for app redirect")
 
         consent_task = loop.create_task(wait_consent())
-        # Wrappers so asyncio.wait() never cancels the shared futures; they are
-        # cancelled below, otherwise they linger as pending tasks.
-        code_wait = asyncio.ensure_future(asyncio.shield(code_future))
-        failure_wait = asyncio.ensure_future(asyncio.shield(failure_future))
         try:
-            # Whatever comes first: the code, the IdP's failure page or the
-            # consent form (after which the code follows).
-            done, _ = await asyncio.wait(
-                [code_wait, failure_wait, consent_task],
-                timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED)
-            if failure_future.done():
-                await _dump_debug(page, debug_dir)
-                raise OauthBrowserError(f"Stellantis IdP rejected the login: {await _page_text(page)}")
-            if not code_future.done():
-                if consent_task in done and consent_task.exception():
-                    await _dump_debug(page, debug_dir)
-                    raise OauthBrowserError(f"Login or consent form not found: {consent_task.exception()}")
-                # Consent clicked (or nothing yet): give the redirect its own window
-                try:
-                    await asyncio.wait_for(asyncio.shield(code_future), timeout=timeout_s)
-                except asyncio.TimeoutError as err:
-                    await _dump_debug(page, debug_dir)
-                    if failure_future.done():
-                        raise OauthBrowserError(f"Stellantis IdP rejected the login: {await _page_text(page)}") from err
-                    raise OauthBrowserError("No authorization code captured (timeout)") from err
-            return code_future.result()
-        finally:
-            for task in (consent_task, code_wait, failure_wait):
-                if not task.done():
-                    task.cancel()
+            return await _wait_login_result(
+                code_future, failure_future, consent_task,
+                max(0, timeout_s - (time.monotonic() - started)))
+        except TimeoutError as err:
+            raise OauthBrowserError("Login deadline reached") from err
+    except BaseException:
+        _LOGGER.warning("Login stopped in phase %s", phase)
+        if debug_dir:
+            await _dump_debug(page, debug_dir)
+        raise
     finally:
+        for task in response_tasks:
+            task.cancel()
+        await asyncio.gather(*response_tasks, return_exceptions=True)
         if browser is not None:
             await _bounded(browser.close(), CLOSE_TIMEOUT_S, "browser.close()")
         await _bounded(pw.stop(), CLOSE_TIMEOUT_S, "playwright.stop()")
@@ -237,7 +267,6 @@ async def _dump_debug(page, debug_dir: str | None) -> None:
             _LOGGER.warning("Screenshot and page source written to %s", debug_dir)
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("Could not write debug output: %s", err)
-
 
 def _cli() -> None:  # pragma: no cover - manual diagnostics
     import argparse

@@ -18,6 +18,7 @@ browser. They are never logged, and neither is the resulting code.
 """
 import asyncio
 import logging
+import math
 import os
 
 from aiohttp import web
@@ -46,10 +47,13 @@ async def handle_login(request: web.Request) -> web.Response:
     except Exception:  # noqa: BLE001 - any parse problem is the same to the caller
         return _error("Body is not valid JSON")
 
+    if not isinstance(payload, dict):
+        return _error("Body must be a JSON object")
+
     url = payload.get("url")
     email = payload.get("email")
     password = payload.get("password")
-    if not url or not email or not password:
+    if not all(isinstance(value, str) and value.strip() for value in (url, email, password)):
         return _error("Missing required params")
 
     # worker-v2 clients send milliseconds; keep accepting them.
@@ -57,24 +61,39 @@ async def handle_login(request: web.Request) -> web.Response:
         timeout_s = float(payload.get("timeout_page", DEFAULT_TIMEOUT_S * 1000)) / 1000
     except (TypeError, ValueError):
         return _error("timeout_page is not a number")
-    timeout_s = min(max(timeout_s, 10.0), 300.0)
+    if not math.isfinite(timeout_s):
+        return _error("timeout_page must be finite")
+    # Leave room for browser teardown before the integration's 300s timeout.
+    timeout_s = min(max(timeout_s, 10.0), 240.0)
 
     if _login_lock.locked():
-        _LOGGER.info("Another login is in progress, queuing this one")
+        response = _error("A login is already running. Wait for it to finish before retrying.", 429)
+        response.headers["Retry-After"] = "10"
+        return response
 
     async with _login_lock:
         _LOGGER.info("Starting login (timeout %.0fs)", timeout_s)
         try:
-            code = await fetch_oauth_code(url, email, password, timeout_s=timeout_s,
-                                          locale=payload.get("locale"))
+            # One cancellation deadline covers startup and every login stage.
+            # fetch_oauth_code still runs its bounded cleanup after cancellation.
+            async with asyncio.timeout(timeout_s):
+                code = await fetch_oauth_code(url, email, password, timeout_s=timeout_s,
+                                              locale=payload.get("locale"))
+        except TimeoutError:
+            _LOGGER.warning("Login deadline reached")
+            return _error("Login timed out. No automatic retry was made.", 504)
         except OauthBrowserError as err:
-            _LOGGER.warning("Login failed: %s", err)
-            return _error(str(err))
+            # Browser exceptions can include URLs, form values or page text.
+            # Never return or log their raw contents.
+            _LOGGER.warning("Login did not complete")
+            return _error("Login did not complete. Check the official app or sign in manually.")
         except Exception as err:  # noqa: BLE001 - never leak a stack trace to the caller
-            _LOGGER.exception("Unexpected error during login")
-            return _error(f"{type(err).__name__}: {err}", 500)
+            _LOGGER.error("Login worker failed (%s)", type(err).__name__)
+            return _error("The local login worker failed. No automatic retry was made.", 500)
 
-    _LOGGER.info("Authorization code captured (%d characters)", len(code))
+    if not isinstance(code, str) or not code.strip():
+        return _error("The login returned no authorization code.", 502)
+    _LOGGER.info("Authorization code captured")
     return web.json_response({"code": code})
 
 

@@ -1,0 +1,20 @@
+name: Login worker regression tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install aiohttp pytest pytest-asyncio
+      - run: python -m pytest -q stellantis_login_worker/tests/test_request_reliability.py stellantis_login_worker/tests/test_login_outcomes.py
+      - run: python stellantis_login_worker/tests/smoke_worker.py
