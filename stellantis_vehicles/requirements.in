@@ -1,0 +1,6 @@
+aiohttp>=3.9
+paho-mqtt>=1.6,<2
+pycryptodome==3.*
+Pillow==12.*
+requests>=2.31
+playwright>=1.50,<2

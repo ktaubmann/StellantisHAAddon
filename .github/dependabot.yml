@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /stellantis_login_worker
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /stellantis_vehicles
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: paho-mqtt
+        update-types: [version-update:semver-major]

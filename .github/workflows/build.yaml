@@ -1,49 +1,54 @@
 name: Build add-on images
-
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-  packages: write
-
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     strategy:
+      fail-fast: false
       matrix:
-        arch: [aarch64, amd64]
+        platform:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
         addon:
           - target: stellantis_vehicles
             image: stellantis-vehicles
           - target: stellantis_login_worker
             image: stellantis-login-worker
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Read add-on version
-        id: version
-        run: echo "version=$(grep '^version:' ${{ matrix.addon.target }}/config.yaml | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-
-      - name: Login to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read add-on metadata
+        id: metadata
+        env:
+          ADDON_TARGET: ${{ matrix.addon.target }}
+        run: |
+          echo "version=$(sed -n 's/^version: //p' "$ADDON_TARGET/config.yaml")" >> "$GITHUB_OUTPUT"
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - name: Build image
+        uses: home-assistant/builder/actions/build-image@250ea2192b6df8ba411f158b5b6c13e09e657eff
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build add-on image
-        uses: home-assistant/builder@master
-        with:
-          args: |
-            ${{ github.event_name == 'pull_request' && '--test' || '' }} \
-            --${{ matrix.arch }} \
-            --target ${{ matrix.addon.target }} \
-            --image ${{ matrix.addon.image }}-${{ matrix.arch }} \
-            --docker-hub ghcr.io/${{ github.repository_owner }} \
-            --addon
+          arch: ${{ matrix.platform.arch }}
+          context: ${{ matrix.addon.target }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image: ghcr.io/${{ steps.metadata.outputs.owner }}/${{ matrix.addon.image }}-${{ matrix.platform.arch }}
+          image-tags: ${{ steps.metadata.outputs.version }}
+          version: ${{ steps.metadata.outputs.version }}
+          build-args: BUILD_FROM=ghcr.io/home-assistant/${{ matrix.platform.arch }}-base-debian:bookworm
+          labels: |
+            io.hass.type=addon
+            org.opencontainers.image.licenses=MIT
+          cache-gha-scope: ${{ matrix.addon.target }}
+          push: ${{ github.event_name != 'pull_request' }}
+          cosign: ${{ github.event_name != 'pull_request' }}

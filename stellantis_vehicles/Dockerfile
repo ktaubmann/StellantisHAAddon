@@ -16,7 +16,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt \
+RUN pip3 install --no-cache-dir --require-hashes -r requirements.txt \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 

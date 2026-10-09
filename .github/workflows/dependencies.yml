@@ -1,0 +1,36 @@
+name: Add-on dependency checks
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '23 6 * * 1'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        addon: [stellantis_login_worker, stellantis_vehicles]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Install runtime dependencies with hashes
+        run: python -m pip install --require-hashes -r "${{ matrix.addon }}/requirements.txt"
+      - name: Verify installed dependency compatibility
+        run: python -m pip check
+      - name: Audit locked runtime dependencies
+        run: |
+          python -m venv /tmp/dependency-audit
+          /tmp/dependency-audit/bin/pip install pip-audit
+          /tmp/dependency-audit/bin/pip-audit --disable-pip --no-deps -r "${{ matrix.addon }}/requirements.txt"
+      - name: Run add-on smoke tests
+        working-directory: ${{ matrix.addon }}
+        run: |
+          set -eu
+          for test in tests/smoke_*.py; do
+            python "$test"
+          done

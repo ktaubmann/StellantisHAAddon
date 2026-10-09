@@ -18,7 +18,7 @@ WORKDIR /app
 COPY requirements.txt .
 # The full Chromium, not just the headless shell: the Stellantis IdP detects
 # the shell and answers with #failedLogin. See app/login.py.
-RUN pip3 install --no-cache-dir -r requirements.txt \
+RUN pip3 install --no-cache-dir --require-hashes -r requirements.txt \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
