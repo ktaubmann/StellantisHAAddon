@@ -75,12 +75,28 @@ login and closed afterwards, so the add-on idles at a few MB.
 
 ## Troubleshooting
 
-**"Stellantis IdP rejected the login"** — wrong credentials, or the account is
-locked. The message contains the text of the page the login stopped on.
+**"Identity provider rejected the login"** or **"Login endpoint returned error
+<code>; manual sign-in may be required"** (codes 401021, 401022, 403041, 403042,
+403044, 403120) — wrong credentials, or the account is locked or needs attention. Sign in once in the official app or on the brand's
+website, then retry.
 
-**"No authorization code captured (timeout)"** — the flow got past the login
-but the redirect never arrived. Set `log_level` to `debug` and try again; the
-log then lists every URL that was seen.
+**"Login endpoint returned HTTP 4xx/5xx"** — the provider refused or failed the
+request (for example rate limiting). Wait a few minutes before retrying.
+
+**"Login or consent form not found (…)"** — a page step did not appear within
+`timeout` seconds. Usually a slow host or a changed login page. Raise `timeout`
+and retry; if it persists, the page layout may have changed.
+
+**"Login deadline reached"** or **"Login timed out"** (HTTP 504) — the whole
+login took longer than 240 seconds. The add-on log names the phase the login
+stopped in and the last URL (query values redacted).
+
+**"Login did not complete. Check the official app or sign in manually."** — an
+unexpected browser error. Set `log_level` to `debug` and try again; the log then
+lists every URL that was seen.
+
+**HTTP 429 "A login is already running"** — another login is in progress. Wait
+for it to finish, then retry (see below).
 
 **`IntegrationNotFound: Integration 'stellantis_vehicles' not found` in the
 Home Assistant log** — the add-on announced itself, but the integration is not
