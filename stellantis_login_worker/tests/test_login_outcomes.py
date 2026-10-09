@@ -14,6 +14,15 @@ from login import OauthBrowserError, _login_response_failure, _wait_login_result
 @pytest.mark.asyncio
 @pytest.mark.parametrize('payload,expected', [
     ({'errorCode': 0}, None),
+    ({'errorCode': 206001}, None),
+    ({'errorCode': 206002}, None),
+    ({'errorCode': 206006}, None),
+    ({'errorCode': 403100}, None),
+    ({'errorCode': 403101}, None),
+    ({'errorCode': 403102}, None),
+    ({'errorCode': 401020}, None),
+    ({'errorCode': 999999}, None),
+    ({'errorCode': 403042}, 'error 403042'),
     ({'errorCode': 401021, 'errorDetails': 'secret-value'}, 'error 401021'),
     ({'errorCode': 'secret-value'}, None),
     ({'errorCode': True}, None),
@@ -75,6 +84,8 @@ async def test_consent_error_is_a_login_failure_without_raw_text():
     with pytest.raises(OauthBrowserError, match='consent form not found') as err:
         await asyncio.wait_for(_wait_login_result(code, failure, task, 60), .5)
     assert 'secret' not in str(err.value)
+    from login import public_login_error
+    assert public_login_error(err.value) == str(err.value)
 
 
 def test_step_timeout_is_separate_from_attempt_deadline():
@@ -132,3 +143,59 @@ def test_browser_implementations_stay_in_sync():
     worker = (root / 'stellantis_login_worker/app/login.py').read_text()
     bridge = (root / 'stellantis_vehicles/app/oauth_browser/login.py').read_text()
     assert worker[worker.index('import asyncio'):].strip() == bridge[bridge.index('import asyncio'):bridge.index('def _cli()')].strip()
+
+
+@pytest.mark.asyncio
+async def test_pending_registration_can_still_complete():
+    response = SimpleNamespace(url='https://example.invalid/accounts.login',
+                               status=200, json=AsyncMock(return_value={'errorCode': 206001}))
+    loop = asyncio.get_running_loop()
+    code, failure = loop.create_future(), loop.create_future()
+    async def consent():
+        reason = await _login_response_failure(response)
+        if reason:
+            failure.set_result(reason)
+        code.set_result('synthetic-code')
+    assert await _wait_login_result(code, failure, asyncio.create_task(consent()), .5) == 'synthetic-code'
+
+
+@pytest.mark.asyncio
+async def test_stuck_url_logged_without_debug_directory(caplog):
+    from login import _dump_debug
+    page = SimpleNamespace(url='https://example.invalid/login?token=private-query#private-fragment',
+                           screenshot=AsyncMock(), content=AsyncMock())
+    await _dump_debug(page, None)
+    assert 'Stuck on https://example.invalid/login' in caplog.text
+    assert 'private' not in caplog.text
+    page.screenshot.assert_not_awaited()
+    page.content.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authenticate_and_console_diagnostics_omit_contents(caplog):
+    from login import _log_authenticate_response, _log_console
+    caplog.set_level('DEBUG')
+    response = SimpleNamespace(status=401, json=AsyncMock(return_value={
+        'code': 401, 'authId': 'private-auth-id', 'message': 'private-provider-message',
+        'callbacks': [
+            {'type': 'PasswordCallback', 'input': [{'value': 'private-password'}]},
+            {'type': 'private-callback-name'}, {'type': ['private-malformed']},
+        ],
+    }))
+    await _log_authenticate_response(response)
+    _log_console(SimpleNamespace(type='error', text='private-console-token'))
+    _log_console(SimpleNamespace(type='private-type', text='private-console-token'))
+    assert 'authenticate HTTP 401' in caplog.text
+    assert 'numeric code 401' in caplog.text
+    assert 'PasswordCallback' in caplog.text
+    assert 'Browser console error' in caplog.text
+    assert 'private' not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('payload', [[], {'code': 'private-code', 'callbacks': 'private-body'}])
+async def test_malformed_diagnostics_are_ignored(payload, caplog):
+    from login import _log_authenticate_response
+    caplog.set_level('DEBUG')
+    await _log_authenticate_response(SimpleNamespace(status=200, json=AsyncMock(return_value=payload)))
+    assert 'private' not in caplog.text

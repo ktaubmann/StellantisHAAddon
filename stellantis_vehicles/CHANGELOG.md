@@ -1,3 +1,10 @@
+## 0.2.2
+
+- Keep browser-login handling in sync with the login worker: conservative
+  provider rejection detection, bounded cleanup and safe phase/URL diagnostics.
+- Restore structured ForgeRock and console diagnostics without logging raw
+  page text, response bodies or console contents.
+
 ## 0.2.1
 
 - Fix: installing or updating failed with `403 denied` from `ghcr.io/taubenhorst/…`.

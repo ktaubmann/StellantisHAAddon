@@ -24,7 +24,7 @@ import os
 from aiohttp import web
 
 import discovery
-from login import LOGIN_DEADLINE_S, OauthBrowserError, fetch_oauth_code
+from login import LOGIN_DEADLINE_S, OauthBrowserError, fetch_oauth_code, public_login_error
 
 _LOGGER = logging.getLogger("loginworker")
 
@@ -84,10 +84,9 @@ async def handle_login(request: web.Request) -> web.Response:
             _LOGGER.warning("Login deadline reached")
             return _error("Login timed out. No automatic retry was made.", 504)
         except OauthBrowserError as err:
-            # Browser exceptions can include URLs, form values or page text.
-            # Never return or log their raw contents.
-            _LOGGER.warning("Login did not complete")
-            return _error("Login did not complete. Check the official app or sign in manually.")
+            message = public_login_error(err)
+            _LOGGER.warning("%s", message)
+            return _error(message)
         except Exception as err:  # noqa: BLE001 - never leak a stack trace to the caller
             _LOGGER.error("Login worker failed (%s)", type(err).__name__)
             return _error("The local login worker failed. No automatic retry was made.", 500)

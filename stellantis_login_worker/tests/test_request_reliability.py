@@ -110,3 +110,31 @@ async def test_cancellation_releases_lock(monkeypatch):
         await task
     assert cleaned.is_set()
     assert not server._login_lock.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('message', [
+    'Identity provider rejected the login',
+    'Login deadline reached',
+    'Login endpoint returned HTTP 429',
+    'Login endpoint returned error 403042; manual sign-in may be required',
+])
+async def test_known_login_errors_are_actionable(message, caplog):
+    server.fetch_oauth_code.side_effect = server.OauthBrowserError(message)
+    response = await server.handle_login(Request(CREDS))
+    assert response.status == 400
+    assert json.loads(response.text)['message'] == message
+    assert message in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('message', [
+    'Identity provider rejected the login private-secret',
+    'Login endpoint returned HTTP 429\nprivate-secret',
+    'Login endpoint returned error 999999; manual sign-in may be required',
+])
+async def test_error_messages_must_match_known_reasons_exactly(message, caplog):
+    server.fetch_oauth_code.side_effect = server.OauthBrowserError(message)
+    response = await server.handle_login(Request(CREDS))
+    assert 'Login did not complete' in response.text
+    assert message not in response.text + caplog.text

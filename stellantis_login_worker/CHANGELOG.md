@@ -1,3 +1,17 @@
+## 0.2.2
+
+- Login attempts have one HTTP deadline and bounded browser cleanup.
+- Concurrent requests now receive HTTP 429 with `Retry-After: 10` instead of
+  waiting in a credentials queue. Reauthenticate multiple accounts one at a time;
+  retry the other account after the active login has completed.
+- Return known, locally constructed failure reasons; unexpected browser errors
+  keep a generic response without page text, credentials or token values.
+- Keep the redacted stuck-page URL even without a debug directory. Debug logs
+  include ForgeRock HTTP/numeric status, known callback types and console event
+  levels; raw response bodies and console contents are omitted.
+- Only documented login rejections abort early. Pending verification and unknown
+  numeric provider codes keep waiting for the browser redirect within the deadline.
+
 ## 0.2.1
 
 - Fix: installing or updating failed with `403 denied` from `ghcr.io/taubenhorst/…`.

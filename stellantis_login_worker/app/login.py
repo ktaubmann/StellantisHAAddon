@@ -37,6 +37,14 @@ CLOSE_TIMEOUT_S = 10.0
 # with room for the bounded teardown (2 x CLOSE_TIMEOUT_S).
 LOGIN_DEADLINE_S = 240.0
 
+# Only documented rejections stop the browser early. Pending registration,
+# verification, password changes and unknown codes may still be handled by
+# the page's screen-set; keep waiting for the redirect within the deadline.
+# SAP Accounts REST API Error Codes and Messages (linked in DOCS.md).
+LOGIN_REJECTION_CODES = frozenset({401021, 401022, 403041, 403042, 403044, 403120})
+GENERIC_LOGIN_ERROR = "Login did not complete. Check the official app or sign in manually."
+
+
 CHROMIUM_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
@@ -51,11 +59,27 @@ class OauthBrowserError(RuntimeError):
     pass
 
 
+def public_login_error(error: Exception) -> str:
+    """Expose only our fixed messages, never arbitrary browser exception text."""
+    message = str(error)
+    if message in {"Identity provider rejected the login", "Login deadline reached",
+                   "playwright is not installed"}:
+        return message
+    if re.fullmatch(r"Login endpoint returned HTTP [45][0-9]{2}", message):
+        return message
+    if re.fullmatch(r"Login or consent form not found \([A-Za-z_]{1,40}\)", message):
+        return message
+    for code in LOGIN_REJECTION_CODES:
+        if message == f"Login endpoint returned error {code}; manual sign-in may be required":
+            return message
+    return GENERIC_LOGIN_ERROR
+
+
 async def _login_response_failure(response) -> str | None:
     """Read only numeric login status; never expose response bodies or URLs."""
     if urlsplit(response.url).path.rstrip("/").lower() != "/accounts.login":
         return None
-    if response.status >= 400:
+    if 400 <= response.status <= 599:
         return f"Login endpoint returned HTTP {int(response.status)}"
     try:
         payload = await asyncio.wait_for(response.json(), 5)
@@ -65,8 +89,42 @@ async def _login_response_failure(response) -> str | None:
         return None
     code = payload.get("errorCode")
     if type(code) is int and 0 < code <= 999999:
+        _LOGGER.debug("accounts.login numeric status %d", code)
+    if type(code) is int and code in LOGIN_REJECTION_CODES:
         return f"Login endpoint returned error {code}; manual sign-in may be required"
     return None
+
+
+async def _log_authenticate_response(response) -> None:
+    """Log useful ForgeRock structure, without tokens, inputs or page text."""
+    _LOGGER.debug("Identity provider authenticate HTTP %d", response.status)
+    try:
+        payload = await asyncio.wait_for(response.json(), 5)
+    except Exception:
+        _LOGGER.debug("Identity provider authenticate body unavailable")
+        return
+    if not isinstance(payload, dict):
+        return
+    code = payload.get("code")
+    if type(code) is int and 0 <= code <= 999999:
+        _LOGGER.debug("Identity provider authenticate numeric code %d", code)
+    callbacks = payload.get("callbacks")
+    if isinstance(callbacks, list):
+        # Only known protocol type names are safe; callback input/output values
+        # and provider-defined names can contain credentials or identifiers.
+        known = {"NameCallback", "PasswordCallback", "TextOutputCallback",
+                 "ChoiceCallback", "ConfirmationCallback", "HiddenValueCallback",
+                 "TextInputCallback", "SuspendedTextOutputCallback"}
+        types = [item.get("type") for item in callbacks if isinstance(item, dict)]
+        names = sorted({name for name in types if isinstance(name, str) and name in known})
+        _LOGGER.debug("Identity provider callbacks: %s; count=%d", ", ".join(names), len(callbacks))
+
+
+def _log_console(message) -> None:
+    # Raw console text may include tokens or arbitrary account data.
+    level = message.type
+    if level in {"error", "warning", "assert"}:
+        _LOGGER.debug("Browser console %s (content omitted)", level)
 
 
 async def _wait_login_result(code, failure, consent, timeout_s):
@@ -164,10 +222,15 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
     def on_response(response) -> None:
         if 300 <= response.status < 400:
             seen("response-location", response.headers.get("location", ""))
-        if urlsplit(response.url).path.rstrip("/").lower() == "/accounts.login":
+        path = urlsplit(response.url).path.rstrip("/").lower()
+        if path == "/accounts.login":
             task = loop.create_task(inspect_login_response(response))
-            response_tasks.add(task)
-            task.add_done_callback(response_tasks.discard)
+        elif path.endswith("/json/authenticate") and _LOGGER.isEnabledFor(logging.DEBUG):
+            task = loop.create_task(_log_authenticate_response(response))
+        else:
+            return
+        response_tasks.add(task)
+        task.add_done_callback(response_tasks.discard)
 
     def on_navigated(frame) -> None:
         seen("framenavigated", frame.url)
@@ -187,7 +250,7 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
         page.on("requestfailed", lambda r: seen("requestfailed", r.url))
         page.on("response", on_response)
         page.on("framenavigated", on_navigated)
-
+        page.on("console", _log_console)
 
         ms = int(timeout_s * 1000)
         _LOGGER.debug("Opening OAuth page")
@@ -244,21 +307,6 @@ async def _launch(pw):
         browser = await pw.chromium.launch(headless=True, args=CHROMIUM_ARGS)
         _LOGGER.debug("Chromium headless shell %s", browser.version)
         return browser
-
-
-_TOKEN_RE = re.compile(r'("(?:authId|tokenId|token|code|password|IDToken\d|input)"\s*:\s*")([^"]{6,})"')
-
-
-def _redact_tokens(text: str) -> str:
-    return _TOKEN_RE.sub(lambda m: f'{m.group(1)}{m.group(2)[:6]}…"', text)
-
-
-async def _page_text(page) -> str:
-    try:
-        text = await asyncio.wait_for(page.inner_text("body"), 10)
-        return " ".join(text.split())[:400]
-    except Exception as err:  # noqa: BLE001
-        return f"<no page text: {err}>"
 
 
 async def _dump_debug(page, debug_dir: str | None) -> None:
