@@ -64,7 +64,7 @@ jobs:
                     "LABELS", sep="\n", file=output)
           PYTHON
       - name: Build image
-        uses: home-assistant/builder/actions/build-image@250ea2192b6df8ba411f158b5b6c13e09e657eff
+        uses: home-assistant/builder/actions/build-image@dd05f5002478a6ef599f54a4bbd48da34aaa39c9
         with:
           arch: ${{ matrix.platform.arch }}
           context: ${{ matrix.addon.target }}
