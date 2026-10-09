@@ -1,12 +1,12 @@
 name: Stellantis Login Worker
-version: 0.2.1
+version: 0.2.2-test
 slug: stellantis_login_worker
 description: Local OAuth login service for the homeassistant-stellantis-vehicles integration
 url: https://github.com/ktaubmann/StellantisHAAddon
 arch:
   - aarch64
   - amd64
-image: ghcr.io/ktaubmann/stellantis-login-worker-{arch}
+# image: ghcr.io/ktaubmann/stellantis-login-worker-{arch}
 init: false
 startup: application
 boot: manual
