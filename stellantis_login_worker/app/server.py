@@ -19,12 +19,14 @@ browser. They are never logged, and neither is the resulting code.
 import asyncio
 import logging
 import math
+import re
 import os
 
 from aiohttp import web
 
 import discovery
-from login import LOGIN_DEADLINE_S, OauthBrowserError, fetch_oauth_code, public_login_error
+from login import (LOGIN_BACKSTOP_S, LOGIN_DEADLINE_S, OauthBrowserError, fetch_oauth_code,
+                   public_login_error)
 
 _LOGGER = logging.getLogger("loginworker")
 
@@ -55,6 +57,10 @@ async def handle_login(request: web.Request) -> web.Response:
     password = payload.get("password")
     if not all(isinstance(value, str) and value.strip() for value in (url, email, password)):
         return _error("Missing required params")
+    locale = payload.get("locale")
+    if locale is not None and not (isinstance(locale, str)
+                                   and re.fullmatch(r"[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8}){0,3}", locale)):
+        return _error("locale must be a language tag such as de-DE")
 
     # worker-v2 clients send milliseconds; keep accepting them.
     try:
@@ -75,11 +81,11 @@ async def handle_login(request: web.Request) -> web.Response:
         _LOGGER.info("Starting login (step timeout %.0fs, deadline %.0fs)",
                      timeout_s, LOGIN_DEADLINE_S)
         try:
-            # One cancellation deadline covers startup and every login stage.
-            # fetch_oauth_code still runs its bounded cleanup after cancellation.
-            async with asyncio.timeout(LOGIN_DEADLINE_S):
+            # fetch_oauth_code enforces LOGIN_DEADLINE_S itself; this backstop only
+            # catches a hung browser start. Cleanup is bounded after cancellation.
+            async with asyncio.timeout(LOGIN_BACKSTOP_S):
                 code = await fetch_oauth_code(url, email, password, timeout_s=timeout_s,
-                                              locale=payload.get("locale"))
+                                              locale=locale)
         except TimeoutError:
             _LOGGER.warning("Login deadline reached")
             return _error("Login timed out. No automatic retry was made.", 504)

@@ -18,7 +18,6 @@ Keep both copies in sync when the Stellantis login flow changes.
 import asyncio
 import logging
 import os
-import re
 import time
 from urllib.parse import parse_qs, urlsplit
 
@@ -36,6 +35,10 @@ CLOSE_TIMEOUT_S = 10.0
 # Whole-attempt deadline. Stays below the integration's 300 s request timeout
 # with room for the bounded teardown (2 x CLOSE_TIMEOUT_S).
 LOGIN_DEADLINE_S = 240.0
+# Callers wrap the attempt in a slightly longer backstop, so the deadline above
+# normally ends it with a clear message; the backstop only catches a hung
+# browser start, which no page-step timeout covers.
+LOGIN_BACKSTOP_S = LOGIN_DEADLINE_S + 15.0
 
 # Only documented rejections stop the browser early. Pending registration,
 # verification, password changes and unknown codes may still be handled by
@@ -56,20 +59,18 @@ CHROMIUM_ARGS = [
 
 
 class OauthBrowserError(RuntimeError):
-    pass
+    """``public``: the message is built here from fixed text and numbers only
+    and may be shown to the user; anything else is replaced by a generic text."""
+
+    def __init__(self, message: str, public: bool = False) -> None:
+        super().__init__(message)
+        self.public = public
 
 
 def public_login_error(error: Exception) -> str:
     """Expose only our fixed messages, never arbitrary browser exception text."""
-    message = str(error)
-    if message in {"Identity provider rejected the login", "Login deadline reached",
-                   "playwright is not installed"}:
-        return message
-    if re.fullmatch(r"Login or consent form not found \([A-Za-z_]{1,40}\)", message):
-        return message
-    for code in LOGIN_REJECTION_CODES:
-        if message == f"Login endpoint returned error {code}; manual sign-in may be required":
-            return message
+    if isinstance(error, OauthBrowserError) and error.public:
+        return str(error)
     return GENERIC_LOGIN_ERROR
 
 
@@ -129,23 +130,32 @@ def _log_console(message) -> None:
 
 
 async def _wait_login_result(code, failure, consent, timeout_s):
-    """Keep watching failures after consent; use a single remaining deadline."""
+    """Keep watching failures after consent; use a single remaining deadline.
+
+    Results that are already in are checked before the deadline, so a code
+    captured during an earlier step is never thrown away by a spent deadline.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
     watchers = {code, failure, consent}
     try:
-        async with asyncio.timeout(timeout_s):
-            while True:
-                await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
-                if failure.done():
-                    raise OauthBrowserError(failure.result())
-                if code.done():
-                    return code.result()
-                if consent.done():
-                    err = consent.exception()
-                    if err is not None:
-                        # Playwright messages can carry URLs; report the type only.
-                        raise OauthBrowserError(
-                            f"Login or consent form not found ({type(err).__name__})") from err
-                    watchers.discard(consent)
+        while True:
+            if failure.done():
+                raise OauthBrowserError(failure.result(), public=True)
+            if code.done():
+                return code.result()
+            if consent in watchers and consent.done():
+                err = consent.exception()
+                if err is not None:
+                    # Playwright messages can carry URLs; report the type only.
+                    raise OauthBrowserError(
+                        f"Login or consent form not found ({type(err).__name__})",
+                        public=True) from err
+                watchers.discard(consent)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+            await asyncio.wait(watchers, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
     finally:
         if not consent.done():
             consent.cancel()
@@ -194,7 +204,7 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
     try:
         from playwright.async_api import async_playwright
     except ImportError as err:  # pragma: no cover
-        raise OauthBrowserError("playwright is not installed") from err
+        raise OauthBrowserError("playwright is not installed", public=True) from err
 
     loop = asyncio.get_running_loop()
     code_future: asyncio.Future[str] = loop.create_future()
@@ -226,7 +236,11 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
         path = urlsplit(response.url).path.rstrip("/").lower()
         if path == "/accounts.login":
             task = loop.create_task(inspect_login_response(response))
-        elif path.endswith("/json/authenticate") and _LOGGER.isEnabledFor(logging.DEBUG):
+        elif path.endswith("/json/authenticate"):
+            if on_event:
+                on_event(f"authenticate {int(response.status)}", response.url)
+            if not _LOGGER.isEnabledFor(logging.DEBUG):
+                return
             task = loop.create_task(_log_authenticate_response(response))
         else:
             return
@@ -237,6 +251,13 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
         seen("framenavigated", frame.url)
         if "failedlogin" in frame.url.lower() and not failure_future.done():
             failure_future.set_result("Identity provider rejected the login")
+
+    def step_ms() -> int:
+        # Each page step gets timeout_s, but never more than the attempt has left.
+        remaining = deadline_s - (time.monotonic() - started)
+        if remaining <= 0:
+            raise OauthBrowserError("Login deadline reached", public=True)
+        return max(1, int(min(timeout_s, remaining) * 1000))
 
     phase = "browser_start"
     pw = await async_playwright().start()
@@ -253,24 +274,30 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
         page.on("framenavigated", on_navigated)
         page.on("console", _log_console)
 
-        ms = int(timeout_s * 1000)
         _LOGGER.debug("Opening OAuth page")
-        phase = "open_authorization"
-        await page.goto(oauth_url, wait_until="domcontentloaded", timeout=ms)
-        phase = "wait_login_form"
-        await page.wait_for_selector(SEL_EMAIL, timeout=ms)
-        await page.fill(SEL_EMAIL, email)
-        await page.fill(SEL_PASSWORD, password)
-        phase = "submit_credentials"
-        await page.click(SEL_SUBMIT)
+        try:
+            phase = "open_authorization"
+            await page.goto(oauth_url, wait_until="domcontentloaded", timeout=step_ms())
+            phase = "wait_login_form"
+            await page.wait_for_selector(SEL_EMAIL, timeout=step_ms())
+            await page.fill(SEL_EMAIL, email, timeout=step_ms())
+            await page.fill(SEL_PASSWORD, password, timeout=step_ms())
+            phase = "submit_credentials"
+            await page.click(SEL_SUBMIT, timeout=step_ms())
+        except OauthBrowserError:
+            raise
+        except Exception as err:
+            # Playwright messages can carry URLs; report phase and type only.
+            raise OauthBrowserError(
+                f"Login page step {phase} failed ({type(err).__name__})", public=True) from err
         phase = "wait_login_result"
         _LOGGER.debug("Credentials submitted, waiting for consent form or app redirect")
 
         async def wait_consent() -> None:
             nonlocal phase
-            await page.wait_for_selector(SEL_AUTHORIZE, timeout=ms)
+            await page.wait_for_selector(SEL_AUTHORIZE, timeout=step_ms())
             phase = "submit_consent"
-            await page.click(SEL_AUTHORIZE)
+            await page.click(SEL_AUTHORIZE, timeout=step_ms())
             phase = "wait_app_redirect"
             _LOGGER.debug("Consent submitted, waiting for app redirect")
 
@@ -280,7 +307,7 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
                 code_future, failure_future, consent_task,
                 max(0, deadline_s - (time.monotonic() - started)))
         except TimeoutError as err:
-            raise OauthBrowserError("Login deadline reached") from err
+            raise OauthBrowserError("Login deadline reached", public=True) from err
     except BaseException:
         _LOGGER.warning("Login stopped in phase %s", phase)
         await _dump_debug(page, debug_dir)

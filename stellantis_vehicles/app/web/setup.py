@@ -242,18 +242,20 @@ class SetupFlow:
 
     async def _browser_login(self, email: str, password: str) -> None:
         await self.load_translations()
-        from oauth_browser.login import fetch_oauth_code  # imported late: playwright is optional locally
+        # imported late: playwright is optional locally
+        from oauth_browser.login import LOGIN_BACKSTOP_S, fetch_oauth_code, public_login_error
         try:
-            # Hard upper bound: several page steps of 60s each plus teardown.
+            # fetch_oauth_code enforces its own deadline; this only catches a hung browser start.
             oauth_code = await asyncio.wait_for(
                 fetch_oauth_code(self._stellantis.get_oauth_url(), email, password,
                                  debug_dir=self._hass.config.path("oauth_debug"),
                                  locale=self._stellantis.get_config("locale")),
-                timeout=240)
+                timeout=LOGIN_BACKSTOP_S)
         except asyncio.TimeoutError as err:
             raise SetupError(self._error_message("get_oauth_code", "timeout")) from err
         except Exception as err:  # noqa: BLE001
-            raise SetupError(self._error_message("get_oauth_code", err)) from err
+            # Browser errors can carry URLs or page text; show only our fixed messages.
+            raise SetupError(self._error_message("get_oauth_code", public_login_error(err))) from err
         await self._finish_login(oauth_code)
 
     async def _finish_login(self, oauth_code: str) -> None:

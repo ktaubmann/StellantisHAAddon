@@ -1,6 +1,10 @@
 ## 0.2.2
 
-- Login attempts have one HTTP deadline and bounded browser cleanup.
+- The `timeout` option bounds each page step again; the whole login is limited
+  to 240 seconds, with bounded browser cleanup.
+- HTTP errors from the provider's login endpoint (e.g. 429/503) no longer abort
+  the login; the page may retry within the deadline.
+- `locale` in the request must be a language tag (e.g. `de-DE`), otherwise 400.
 - Concurrent requests now receive HTTP 429 with `Retry-After: 10` instead of
   waiting in a credentials queue. Reauthenticate multiple accounts one at a time;
   retry the other account after the active login has completed.

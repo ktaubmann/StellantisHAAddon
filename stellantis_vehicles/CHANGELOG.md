@@ -2,6 +2,9 @@
 
 - Keep browser-login handling in sync with the login worker: conservative
   provider rejection detection, bounded cleanup and safe phase/URL diagnostics.
+  Each page step has 60 s, the whole login 240 s.
+- The login page shows only known failure reasons (rejected login, failed page
+  step, deadline); raw browser error text with URLs is no longer displayed.
 - Restore structured ForgeRock and console diagnostics without logging raw
   page text, response bodies or console contents.
 

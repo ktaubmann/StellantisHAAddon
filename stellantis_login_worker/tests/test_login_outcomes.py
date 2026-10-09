@@ -89,6 +89,25 @@ async def test_consent_error_is_a_login_failure_without_raw_text():
     assert public_login_error(err.value) == str(err.value)
 
 
+@pytest.mark.asyncio
+async def test_code_already_captured_wins_over_spent_deadline():
+    loop = asyncio.get_running_loop()
+    code, failure = loop.create_future(), loop.create_future()
+    code.set_result('synthetic-code')
+    async def consent():
+        await asyncio.Event().wait()
+    task = asyncio.create_task(consent())
+    assert await _wait_login_result(code, failure, task, 0) == 'synthetic-code'
+    assert task.done()
+
+
+def test_only_public_errors_are_exposed():
+    from login import GENERIC_LOGIN_ERROR, public_login_error
+    assert public_login_error(OauthBrowserError('Login deadline reached', public=True)) == 'Login deadline reached'
+    assert public_login_error(OauthBrowserError('https://x.invalid/?token=secret')) == GENERIC_LOGIN_ERROR
+    assert public_login_error(RuntimeError('Login deadline reached')) == GENERIC_LOGIN_ERROR
+
+
 def test_step_timeout_is_separate_from_attempt_deadline():
     import inspect
     from login import LOGIN_DEADLINE_S, fetch_oauth_code
@@ -96,6 +115,9 @@ def test_step_timeout_is_separate_from_attempt_deadline():
     assert params['deadline_s'].default == LOGIN_DEADLINE_S
     # Deadline plus bounded teardown stays below the integration's 300 s.
     assert LOGIN_DEADLINE_S + 20 < 300
+    from login import LOGIN_BACKSTOP_S
+    # The backstop plus bounded teardown also stays below the integration's 300 s.
+    assert LOGIN_DEADLINE_S < LOGIN_BACKSTOP_S and LOGIN_BACKSTOP_S + 20 < 300
 
 
 @pytest.mark.asyncio

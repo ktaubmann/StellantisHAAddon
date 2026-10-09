@@ -120,7 +120,7 @@ async def test_cancellation_releases_lock(monkeypatch):
     'Login endpoint returned error 403042; manual sign-in may be required',
 ])
 async def test_known_login_errors_are_actionable(message, caplog):
-    server.fetch_oauth_code.side_effect = server.OauthBrowserError(message)
+    server.fetch_oauth_code.side_effect = server.OauthBrowserError(message, public=True)
     response = await server.handle_login(Request(CREDS))
     assert response.status == 400
     assert json.loads(response.text)['message'] == message
@@ -133,8 +133,24 @@ async def test_known_login_errors_are_actionable(message, caplog):
     'Login endpoint returned HTTP 429',
     'Login endpoint returned error 999999; manual sign-in may be required',
 ])
-async def test_error_messages_must_match_known_reasons_exactly(message, caplog):
+async def test_only_public_errors_are_shown(message, caplog):
+    # Not marked public (e.g. wrapped browser text): never shown or logged.
     server.fetch_oauth_code.side_effect = server.OauthBrowserError(message)
     response = await server.handle_login(Request(CREDS))
     assert 'Login did not complete' in response.text
     assert message not in response.text + caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('locale', [123, ['de'], 'de-DE; rm -rf', ''])
+async def test_invalid_locale_rejected_before_browser(locale):
+    response = await server.handle_login(Request(dict(CREDS, locale=locale)))
+    assert response.status == 400
+    server.fetch_oauth_code.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_valid_locale_passed_on():
+    response = await server.handle_login(Request(dict(CREDS, locale='de-DE')))
+    assert response.status == 200
+    assert server.fetch_oauth_code.await_args.kwargs['locale'] == 'de-DE'

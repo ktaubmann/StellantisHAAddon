@@ -1,6 +1,7 @@
 name: Add-on dependency checks
 on:
   push:
+    branches: [main, 'test/**']
   pull_request:
   schedule:
     - cron: '23 6 * * 1'
@@ -25,7 +26,7 @@ jobs:
       - name: Audit locked runtime dependencies
         run: |
           python -m venv /tmp/dependency-audit
-          /tmp/dependency-audit/bin/pip install pip-audit
+          /tmp/dependency-audit/bin/pip install pip-audit==2.10.1
           /tmp/dependency-audit/bin/pip-audit --disable-pip --no-deps -r "${{ matrix.addon }}/requirements.txt"
       - name: Run add-on smoke tests
         working-directory: ${{ matrix.addon }}

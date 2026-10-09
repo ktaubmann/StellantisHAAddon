@@ -77,16 +77,22 @@ login and closed afterwards, so the add-on idles at a few MB.
 
 **"Identity provider rejected the login"** or **"Login endpoint returned error
 <code>; manual sign-in may be required"** (codes 401021, 401022, 403041, 403042,
-403044, 403120) — wrong credentials, or the account is locked or needs attention. Sign in once in the official app or on the brand's
-website, then retry.
+403044, 403120) — wrong credentials, or the account is locked or needs
+attention. Sign in once in the official app or on the brand's website, then
+retry.
 
-**"Login or consent form not found (…)"** — a page step did not appear within
-`timeout` seconds. Usually a slow host or a changed login page. Raise `timeout`
-and retry; if it persists, the page layout may have changed.
+**"Login page step … failed (…)"** or **"Login or consent form not found (…)"**
+— a page did not load or a form did not appear within `timeout` seconds. The
+message names the step (for example `wait_login_form`) and the error type.
+Usually a slow host or a changed login page: raise `timeout` and retry; if it
+persists, the page layout may have changed.
 
-**"Login deadline reached"** or **"Login timed out"** (HTTP 504) — the whole
-login took longer than 240 seconds. The add-on log names the phase the login
-stopped in and the last URL (query values redacted).
+**"Login deadline reached"** — the whole login took longer than 240 seconds.
+The add-on log names the phase the login stopped in and the last URL (query
+values redacted).
+
+**"Login timed out"** (HTTP 504) — the browser itself hung, usually while
+starting. Restart the add-on; on a Raspberry Pi also check free memory.
 
 **"Login did not complete. Check the official app or sign in manually."** — an
 unexpected browser error. Set `log_level` to `debug` and try again; the log then
