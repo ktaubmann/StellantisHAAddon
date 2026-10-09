@@ -16,3 +16,22 @@ Dependabot checks Python packages in both add-on directories and GitHub Actions 
 The image-build workflow uses the composable Home Assistant build-image action on native amd64 and aarch64 runners. The deprecated root action is unsuitable for a plain SHA pin because it derives a container-image tag from that ref. Both architectures are tested on pull requests. Before release, require those builds and a real login test, because mock-based smoke tests do not exercise Chromium startup or provider behavior. Upstream fork workflows may require maintainer approval.
 
 These changes pin Python runtime dependencies and the top-level Actions. They do not make images bit-for-bit reproducible: Debian base-image tags, apt packages, build tools for source distributions and nested Actions can still change. Base-image digest pinning and OS-package audits are separate follow-ups.
+
+## Reviewing Dependabot changes
+
+The compiled requirements currently omit the generator header. Dependabot may
+therefore edit `requirements.txt` directly without updating `requirements.in` or
+resolving the full dependency graph. Treat these PRs as update proposals, not as
+ready-to-merge lockfiles. Before merging, review the compatibility bounds in
+`requirements.in`, adjust them when needed, rerun the documented `uv pip compile`
+command for every affected add-on, and commit the regenerated hashed output.
+Require hash-verified installation, `pip check`, audits and regression tests on
+the resulting commit. Do not hand-edit hashes or merge an unregenerated lockfile.
+
+CI reads each architecture's base image and all labels from the add-on's
+`build.yaml`, so source builds and workflow builds use the same metadata.
+Versioned images and `latest` are published only for main or version tags;
+PRs and manual builds on other branches do not publish. `latest` also supplies
+the registry build cache. A Playwright update changes bundled Chromium: require
+a real login with the exact built image on **both amd64 and aarch64** before
+release. An offline browser startup check alone does not satisfy that gate.

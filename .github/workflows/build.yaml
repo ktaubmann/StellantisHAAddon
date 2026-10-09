@@ -29,13 +29,40 @@ jobs:
             image: stellantis-login-worker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Install build metadata reader
+        run: python -m pip install PyYAML==6.0.3
       - name: Read add-on metadata
         id: metadata
         env:
           ADDON_TARGET: ${{ matrix.addon.target }}
+          ADDON_ARCH: ${{ matrix.platform.arch }}
         run: |
-          echo "version=$(sed -n 's/^version: //p' "$ADDON_TARGET/config.yaml")" >> "$GITHUB_OUTPUT"
-          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import yaml
+
+          target = Path(os.environ["ADDON_TARGET"])
+          config = yaml.safe_load((target / "config.yaml").read_text())
+          build = yaml.safe_load((target / "build.yaml").read_text())
+          version = str(config["version"])
+          ref = os.environ["GITHUB_REF"]
+          publish = os.environ["GITHUB_EVENT_NAME"] != "pull_request" and (
+              ref == "refs/heads/main" or ref.startswith("refs/tags/v"))
+          tags = [version, "latest"] if publish else [version]
+          labels = {**build.get("labels", {}), "io.hass.type": "addon"}
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"version={version}", file=output)
+              print(f"owner={os.environ['GITHUB_REPOSITORY_OWNER'].lower()}", file=output)
+              print(f"build_from={build['build_from'][os.environ['ADDON_ARCH']]}", file=output)
+              print(f"publish={str(publish).lower()}", file=output)
+              print("tags<<TAGS", *tags, "TAGS", sep="\n", file=output)
+              print("labels<<LABELS", *(f"{k}={v}" for k, v in labels.items()),
+                    "LABELS", sep="\n", file=output)
+          PYTHON
       - name: Build image
         uses: home-assistant/builder/actions/build-image@250ea2192b6df8ba411f158b5b6c13e09e657eff
         with:
@@ -43,12 +70,10 @@ jobs:
           context: ${{ matrix.addon.target }}
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
           image: ghcr.io/${{ steps.metadata.outputs.owner }}/${{ matrix.addon.image }}-${{ matrix.platform.arch }}
-          image-tags: ${{ steps.metadata.outputs.version }}
+          image-tags: ${{ steps.metadata.outputs.tags }}
           version: ${{ steps.metadata.outputs.version }}
-          build-args: BUILD_FROM=ghcr.io/home-assistant/${{ matrix.platform.arch }}-base-debian:bookworm
-          labels: |
-            io.hass.type=addon
-            org.opencontainers.image.licenses=MIT
+          build-args: BUILD_FROM=${{ steps.metadata.outputs.build_from }}
+          labels: ${{ steps.metadata.outputs.labels }}
           cache-gha-scope: ${{ matrix.addon.target }}
-          push: ${{ github.event_name != 'pull_request' }}
-          cosign: ${{ github.event_name != 'pull_request' }}
+          push: ${{ steps.metadata.outputs.publish }}
+          cosign: ${{ steps.metadata.outputs.publish }}
