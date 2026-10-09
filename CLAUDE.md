@@ -139,6 +139,12 @@ Add-on 0.2.0 (25.09.2026): Upstream auf develop da32364 gehoben (Schritte 1–4:
 Release). Offline-Tests grün, live auf dem Pi noch nicht gelaufen.
 Zweites Add-on `stellantis_login_worker` 0.2.0 (mit Supervisor-Discovery) — HTTP-Vertrag getestet, live noch nicht gelaufen.
 0.2.1 (08.10.2026, beide Add-ons): nur Image-Pfad/Links auf `ktaubmann` (Nutzer bekam 403 von `ghcr.io/taubenhorst`).
+0.2.2 (09.10.2026, beide Add-ons): PRs #1/#2 von FiraSenax plus eigene Review-Fixes. Abhängigkeiten mit Hashes
+(`requirements.in` → `requirements.txt`, `docs/DEPENDENCIES.md`), Playwright 1.63, Build per `build-image`-Action
+(liest `build.yaml`, `latest` nur von main/Tags). Login: `timeout` je Seitenschritt, Gesamtfrist 240 s
+(`LOGIN_DEADLINE_S`), Notbremse 255 s beim Aufrufer; nur `OauthBrowserError(public=True)` geht an Nutzer;
+nur dokumentierte Gigya-Codes brechen ab; Worker antwortet bei parallelem Login mit 429.
+Echter Login mit Playwright 1.63 auf aarch64 noch nicht verifiziert.
 
 ## Nächste Schritte
 6. Auf dem Pi: Add-on-Store → Repositories →
