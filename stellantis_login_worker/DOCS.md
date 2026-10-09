@@ -56,7 +56,7 @@ its own.
 | Option      | Default | Meaning                                                              |
 | ----------- | ------- | -------------------------------------------------------------------- |
 | `log_level` | `info`  | Set to `debug` to see every URL the browser visits (query values are masked). |
-| `timeout`   | `60`    | Seconds to wait for the login to complete. The integration may send its own value. |
+| `timeout`   | `60`    | Seconds to wait for each page step of the login. The whole login is limited to 240 seconds. The integration may send its own value. |
 
 ## API
 

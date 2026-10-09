@@ -66,6 +66,27 @@ async def test_failure_after_consent_is_detected_immediately():
 
 
 @pytest.mark.asyncio
+async def test_consent_error_is_a_login_failure_without_raw_text():
+    loop = asyncio.get_running_loop()
+    code, failure = loop.create_future(), loop.create_future()
+    async def consent():
+        raise RuntimeError('Timeout waiting for selector on https://example.invalid/?token=secret')
+    task = asyncio.create_task(consent())
+    with pytest.raises(OauthBrowserError, match='consent form not found') as err:
+        await asyncio.wait_for(_wait_login_result(code, failure, task, 60), .5)
+    assert 'secret' not in str(err.value)
+
+
+def test_step_timeout_is_separate_from_attempt_deadline():
+    import inspect
+    from login import LOGIN_DEADLINE_S, fetch_oauth_code
+    params = inspect.signature(fetch_oauth_code).parameters
+    assert params['deadline_s'].default == LOGIN_DEADLINE_S
+    # Deadline plus bounded teardown stays below the integration's 300 s.
+    assert LOGIN_DEADLINE_S + 20 < 300
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('outcome', ['code', 'failure', 'timeout', 'cancel'])
 async def test_pending_consent_is_always_drained(outcome):
     loop = asyncio.get_running_loop()

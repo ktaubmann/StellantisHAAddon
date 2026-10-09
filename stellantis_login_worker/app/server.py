@@ -24,7 +24,7 @@ import os
 from aiohttp import web
 
 import discovery
-from login import OauthBrowserError, fetch_oauth_code
+from login import LOGIN_DEADLINE_S, OauthBrowserError, fetch_oauth_code
 
 _LOGGER = logging.getLogger("loginworker")
 
@@ -63,8 +63,8 @@ async def handle_login(request: web.Request) -> web.Response:
         return _error("timeout_page is not a number")
     if not math.isfinite(timeout_s):
         return _error("timeout_page must be finite")
-    # Leave room for browser teardown before the integration's 300s timeout.
-    timeout_s = min(max(timeout_s, 10.0), 240.0)
+    # Per page step, as in worker-v2; the whole attempt is bounded separately.
+    timeout_s = min(max(timeout_s, 10.0), LOGIN_DEADLINE_S)
 
     if _login_lock.locked():
         response = _error("A login is already running. Wait for it to finish before retrying.", 429)
@@ -72,11 +72,12 @@ async def handle_login(request: web.Request) -> web.Response:
         return response
 
     async with _login_lock:
-        _LOGGER.info("Starting login (timeout %.0fs)", timeout_s)
+        _LOGGER.info("Starting login (step timeout %.0fs, deadline %.0fs)",
+                     timeout_s, LOGIN_DEADLINE_S)
         try:
             # One cancellation deadline covers startup and every login stage.
             # fetch_oauth_code still runs its bounded cleanup after cancellation.
-            async with asyncio.timeout(timeout_s):
+            async with asyncio.timeout(LOGIN_DEADLINE_S):
                 code = await fetch_oauth_code(url, email, password, timeout_s=timeout_s,
                                               locale=payload.get("locale"))
         except TimeoutError:

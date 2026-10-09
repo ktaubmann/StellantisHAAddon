@@ -33,6 +33,9 @@ SEL_AUTHORIZE = "#cvs_from input[type='submit']"
 
 APP_SCHEME_PREFIX = "mym"
 CLOSE_TIMEOUT_S = 10.0
+# Whole-attempt deadline. Stays below the integration's 300 s request timeout
+# with room for the bounded teardown (2 x CLOSE_TIMEOUT_S).
+LOGIN_DEADLINE_S = 240.0
 
 CHROMIUM_ARGS = [
     "--no-sandbox",
@@ -78,7 +81,11 @@ async def _wait_login_result(code, failure, consent, timeout_s):
                 if code.done():
                     return code.result()
                 if consent.done():
-                    consent.result()
+                    err = consent.exception()
+                    if err is not None:
+                        # Playwright messages can carry URLs; report the type only.
+                        raise OauthBrowserError(
+                            f"Login or consent form not found ({type(err).__name__})") from err
                     watchers.discard(consent)
     finally:
         if not consent.done():
@@ -113,11 +120,14 @@ async def _bounded(coro, timeout: float, what: str) -> None:
 
 async def fetch_oauth_code(oauth_url: str, email: str, password: str,
                            timeout_s: float = 60.0, debug_dir: str | None = None,
-                           on_event=None, locale: str | None = None) -> str:
+                           on_event=None, locale: str | None = None,
+                           deadline_s: float = LOGIN_DEADLINE_S) -> str:
     """Return the OAuth authorization code for the given credentials.
 
     ``locale``: browser locale (e.g. ``de-DE``), normally the one of the
-    account's country from the app configuration. ``debug_dir``: if set, a
+    account's country from the app configuration. ``timeout_s`` bounds each
+    page step, ``deadline_s`` the whole attempt from browser start to the
+    redirect (a slow host needs most of it for Chromium alone). ``debug_dir``: if set, a
     screenshot and the final URL are written there when no code could be
     captured. ``on_event(source, url)`` is called for every URL seen
     (diagnostics CLI).
@@ -204,13 +214,12 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
         try:
             return await _wait_login_result(
                 code_future, failure_future, consent_task,
-                max(0, timeout_s - (time.monotonic() - started)))
+                max(0, deadline_s - (time.monotonic() - started)))
         except TimeoutError as err:
             raise OauthBrowserError("Login deadline reached") from err
     except BaseException:
         _LOGGER.warning("Login stopped in phase %s", phase)
-        if debug_dir:
-            await _dump_debug(page, debug_dir)
+        await _dump_debug(page, debug_dir)
         raise
     finally:
         for task in response_tasks:
