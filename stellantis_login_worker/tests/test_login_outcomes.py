@@ -40,10 +40,11 @@ async def test_provider_json_reports_only_numeric_error(payload, expected):
 
 
 @pytest.mark.asyncio
-async def test_http_failure_does_not_read_body():
+@pytest.mark.parametrize('status', [429, 503])
+async def test_http_error_keeps_waiting_and_does_not_read_body(status):
     response = SimpleNamespace(url='https://accounts.example.invalid/accounts.login',
-                               status=429, json=AsyncMock())
-    assert 'HTTP 429' in await _login_response_failure(response)
+                               status=status, json=AsyncMock())
+    assert await _login_response_failure(response) is None
     response.json.assert_not_awaited()
 
 

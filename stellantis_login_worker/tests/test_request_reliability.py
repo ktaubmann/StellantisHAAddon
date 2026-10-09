@@ -116,7 +116,7 @@ async def test_cancellation_releases_lock(monkeypatch):
 @pytest.mark.parametrize('message', [
     'Identity provider rejected the login',
     'Login deadline reached',
-    'Login endpoint returned HTTP 429',
+    'Login or consent form not found (TimeoutError)',
     'Login endpoint returned error 403042; manual sign-in may be required',
 ])
 async def test_known_login_errors_are_actionable(message, caplog):
@@ -130,7 +130,7 @@ async def test_known_login_errors_are_actionable(message, caplog):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('message', [
     'Identity provider rejected the login private-secret',
-    'Login endpoint returned HTTP 429\nprivate-secret',
+    'Login endpoint returned HTTP 429',
     'Login endpoint returned error 999999; manual sign-in may be required',
 ])
 async def test_error_messages_must_match_known_reasons_exactly(message, caplog):

@@ -65,8 +65,6 @@ def public_login_error(error: Exception) -> str:
     if message in {"Identity provider rejected the login", "Login deadline reached",
                    "playwright is not installed"}:
         return message
-    if re.fullmatch(r"Login endpoint returned HTTP [45][0-9]{2}", message):
-        return message
     if re.fullmatch(r"Login or consent form not found \([A-Za-z_]{1,40}\)", message):
         return message
     for code in LOGIN_REJECTION_CODES:
@@ -80,7 +78,10 @@ async def _login_response_failure(response) -> str | None:
     if urlsplit(response.url).path.rstrip("/").lower() != "/accounts.login":
         return None
     if 400 <= response.status <= 599:
-        return f"Login endpoint returned HTTP {int(response.status)}"
+        # Transient (429/503) or secondary-call errors: the page may retry or
+        # recover, so log the status and keep waiting within the deadline.
+        _LOGGER.debug("accounts.login HTTP %d", int(response.status))
+        return None
     try:
         payload = await asyncio.wait_for(response.json(), 5)
     except Exception:  # Malformed/non-JSON response is not proof of login rejection.

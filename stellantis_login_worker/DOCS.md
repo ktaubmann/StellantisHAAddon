@@ -80,9 +80,6 @@ login and closed afterwards, so the add-on idles at a few MB.
 403044, 403120) — wrong credentials, or the account is locked or needs attention. Sign in once in the official app or on the brand's
 website, then retry.
 
-**"Login endpoint returned HTTP 4xx/5xx"** — the provider refused or failed the
-request (for example rate limiting). Wait a few minutes before retrying.
-
 **"Login or consent form not found (…)"** — a page step did not appear within
 `timeout` seconds. Usually a slow host or a changed login page. Raise `timeout`
 and retry; if it persists, the page layout may have changed.
