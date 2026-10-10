@@ -1,7 +1,9 @@
 """Own replacement for the upstream DataUpdateCoordinator.
 
-Port of the coordinator half of the upstream ``base.py`` (commit da32364,
-first ported from 69fddda) without anything Home-Assistant-specific. stellantis.py imports
+Port of the coordinator half of the upstream ``base.py`` (develop 7f75d7d,
+first ported from 69fddda) without anything Home-Assistant-specific. Not
+ported: the supported-features lookup (upstream shows it in the diagnostics
+only). stellantis.py imports
 ``StellantisVehicleCoordinator`` from here and touches:
   - coordinator._vehicle / coordinator._commands_history (per action_id:
     name, updates, service, message, retried, sent_at - the MQTT 400 retry
@@ -35,7 +37,14 @@ from .const import (
     VEHICLE_TYPE_ELECTRIC,
     VEHICLE_TYPE_HYBRID,
 )
-from .utils import SENSITIVE_DATA_FILTER, get_datetime, log_call, rate_limit, time_from_pt_string
+from .utils import (
+    SENSITIVE_DATA_FILTER,
+    get_datetime,
+    log_call,
+    rate_limit,
+    time_from_pt_string,
+    vehicle_removed_issue_id,
+)
 
 _LOGGER = logging.getLogger(__name__)
 # Shared filter instance, attached once at import (upstream issue #414).
@@ -75,6 +84,8 @@ class StellantisVehicleCoordinator:
 
         self._listeners: list[Listener] = []
         self._task: asyncio.Task | None = None
+        # Strong references for fire-and-forget listener notifications.
+        self._notify_tasks: set[asyncio.Task] = set()
         self._refresh_lock = asyncio.Lock()
         # Called once when polling stops because the token is dead
         # (upstream: config_entry.async_start_reauth). Set by main.py.
@@ -151,7 +162,9 @@ class StellantisVehicleCoordinator:
 
     def async_update_listeners(self) -> None:
         """Upstream name: schedule a listener notification from sync code."""
-        self._hass.loop.create_task(self._notify())
+        task = self._hass.loop.create_task(self._notify())
+        self._notify_tasks.add(task)
+        task.add_done_callback(self._notify_tasks.discard)
 
     # --- polling -------------------------------------------------------------
     async def _run(self) -> None:
@@ -292,7 +305,7 @@ class StellantisVehicleCoordinator:
             self._hass,
             f"Vehicle {self.vin} is no longer linked to this Stellantis account.",
             title="Stellantis Vehicles",
-            notification_id=f"vehicle_removed_{self.vin}",
+            notification_id=vehicle_removed_issue_id(self.vin),
         )
 
     def _clear_vehicle_removed(self) -> None:
@@ -300,6 +313,8 @@ class StellantisVehicleCoordinator:
             return
         self._vehicle_removed = False
         _LOGGER.info("Vehicle %s is reachable again", self.vin)
+        # Upstream deletes its repair issue here.
+        persistent_notification.async_dismiss(self._hass, vehicle_removed_issue_id(self.vin))
 
     async def _notify(self) -> None:
         for listener in list(self._listeners):

@@ -29,7 +29,7 @@ from homeassistant.util.ssl import client_context
 
 from .base import StellantisVehicleCoordinator
 from .otp.otp import Otp, save_otp, load_otp, ConfigException
-from .utils import ( get_datetime, rate_limit, SENSITIVE_DATA_FILTER, replace_string_placeholders, log_call )
+from .utils import ( get_datetime, rate_limit, SENSITIVE_DATA_FILTER, replace_string_placeholders, log_call, resolve_mqtt_resp_data_error )
 from .exceptions import ( CommunicationError, RateLimitException )
 
 from .const import (
@@ -62,8 +62,10 @@ from .const import (
     MQTT_REQ_TOPIC,
     GET_USER_INFO_URL,
     CAR_API_GET_VEHICLE_TRIPS_URL,
+    GET_VEHICLE_RIGHTS_URL,
     MQTT_REFRESH_TOKEN_JSON_DATA,
     MQTT_REFRESH_TOKEN_TTL,
+    COMMAND_STATUS_SUCCESS,
     OTP_FILENAME,
     ABRP_URL,
     ABRP_API_KEY,
@@ -502,6 +504,9 @@ class StellantisVehicles(StellantisOauth):
         self._coordinator_dict = {}
         self._vehicles = []
         self._mqtt = None
+        self._mqtt_subscriptions:dict[int, str] = {}
+        # paho still reports is_connected() while on_disconnect runs
+        self._mqtt_connected = False
         self._mqtt_lock = asyncio.Lock()
 
         self._oauth_token_scheduled = None
@@ -656,7 +661,7 @@ class StellantisVehicles(StellantisOauth):
         await self.scheduled_mqtt_token_refresh()
 
     @log_call
-    async def scheduled_oauth_token_refresh(self, now=None):
+    async def scheduled_oauth_token_refresh(self, now:datetime | None = None) -> None:
         def get_next_run():
             expires_in = self.get_config("oauth")["expires_in"]
             return datetime.fromisoformat(expires_in) - timedelta(minutes=5)
@@ -699,6 +704,9 @@ class StellantisVehicles(StellantisOauth):
             # @rate_limit(6, 1800) on refresh_oauth_token_request.
             _LOGGER.exception("Unexpected error during the OAuth token refresh, retrying in 5 minutes")
             next_run = get_datetime() + timedelta(minutes=5)
+        if self._shutting_down:
+            # Unloaded while the refresh was in flight: don't re-arm the timer.
+            return
         _LOGGER.debug("Next oauth token refresh scheduled for %s", next_run)
         next_job = HassJob(self.scheduled_oauth_token_refresh, f"{DOMAIN} refresh oauth token: {next_run}", cancel_on_shutdown=True)
         self._oauth_token_scheduled = async_track_point_in_time(self._hass, next_job, next_run)
@@ -800,6 +808,16 @@ class StellantisVehicles(StellantisOauth):
         return vehicle_status_request
 
     @log_call
+    async def get_vehicle_rights(self, vehicle:dict[str, Any]) -> dict[str, Any]:
+        """ Remote services the vehicle's subscription covers, grouped per telematics unit. """
+        url = self.apply_query_params(GET_VEHICLE_RIGHTS_URL, CLIENT_ID_QUERY_PARAMS, vehicle)
+        # The vendor app sends this explicitly for this endpoint.
+        headers = {**self.apply_dict_params(CAR_API_HEADERS), "accept": "application/json"}
+        rights_request = await self.make_http_request(url, 'GET', headers)
+        _log_http_exchange(url, headers, rights_request)
+        return rights_request
+
+    @log_call
     async def get_vehicle_last_trip(self, vehicle, page_token=None):
         url = self.apply_query_params(CAR_API_GET_VEHICLE_TRIPS_URL, CLIENT_ID_QUERY_PARAMS, vehicle)
         headers = self.apply_dict_params(CAR_API_HEADERS)
@@ -852,7 +870,7 @@ class StellantisVehicles(StellantisOauth):
         return vehicle_maintenance_request
 
     @log_call
-    async def scheduled_mqtt_token_refresh(self, now=None, force=False):
+    async def scheduled_mqtt_token_refresh(self, now:datetime | None = None, force:bool = False) -> None:
         if not self.remote_commands:
             return
         def get_next_run():
@@ -903,6 +921,9 @@ class StellantisVehicles(StellantisOauth):
             # inside the try and is only re-armed below.
             _LOGGER.exception("Unexpected error during the MQTT token refresh, retrying in 5 minutes")
             next_run = get_datetime() + timedelta(minutes=5)
+        if self._shutting_down:
+            # Unloaded while the refresh was in flight: don't re-arm the timer.
+            return
         _LOGGER.debug("Next mqtt token refresh scheduled for %s", next_run)
         next_job = HassJob(self.scheduled_mqtt_token_refresh, f"{DOMAIN} refresh mqtt token: {next_run}", cancel_on_shutdown=True)
         self._mqtt_token_scheduled = async_track_point_in_time(self._hass, next_job, next_run)
@@ -1010,15 +1031,30 @@ class StellantisVehicles(StellantisOauth):
         mqtt_client.disconnect()
         await self._hass.async_add_executor_job(mqtt_client.loop_stop)
 
+    def _update_all_listeners(self):
+        for coordinator in self._coordinator_dict.values():
+            coordinator.async_update_listeners()
+
     @log_call
-    def _on_mqtt_connect(self, client, userdata, result_code, _):
-        _LOGGER.debug("MQTT connected (code %s)", result_code)
+    def _on_mqtt_connect(self, client:mqtt.Client, userdata:Any, flags:Any, result_code:int) -> None:
+        if result_code != 0:
+            # paho also calls on_connect for a refused connection; stay
+            # disconnected so commands aren't offered and nothing is subscribed.
+            _LOGGER.debug("MQTT connection refused (code %s: %s)", result_code, mqtt.connack_string(result_code))
+            return
+        _LOGGER.debug("MQTT connected (flags %s)", flags)
+        self._mqtt_connected = True
+        self._hass.loop.call_soon_threadsafe(self._update_all_listeners)
         try:
             topics = [MQTT_RESP_TOPIC + self.get_config("customer_id") + "/#"]
             for vehicle in self._vehicles:
                 topics.append(MQTT_EVENT_TOPIC + vehicle["vin"])
+            # paho's SUBACK callback only carries the mid, so remember which topic it belongs to.
+            self._mqtt_subscriptions.clear()
             for topic in topics:
-                client.subscribe(topic, qos=MQTT_QOS)
+                result, mid = client.subscribe(topic, qos=MQTT_QOS)
+                if result == mqtt.MQTT_ERR_SUCCESS:
+                    self._mqtt_subscriptions[mid] = topic
                 _LOGGER.debug("Subscribed to MQTT topic %s", topic)
         except Exception:
             _LOGGER.exception("Error while subscribing to MQTT topics")
@@ -1026,6 +1062,8 @@ class StellantisVehicles(StellantisOauth):
     @log_call
     def _on_mqtt_disconnect(self, client, userdata, result_code):
         _LOGGER.debug("MQTT disconnected (code %s: %s)", result_code, mqtt.error_string(result_code))
+        self._mqtt_connected = False
+        self._hass.loop.call_soon_threadsafe(self._update_all_listeners)
         if result_code == 11: # MQTT_ERR_AUTH
             # Runs on the paho network thread; wait=False keeps the reconnect loop
             # from blocking on the token refresh (network I/O, no timeout).
@@ -1033,10 +1071,11 @@ class StellantisVehicles(StellantisOauth):
             self.do_async(self.scheduled_mqtt_token_refresh(force=True), wait=False)
 
     @log_call
-    def _on_mqtt_subscribe(self, client, userdata, mid, granted_qos):
+    def _on_mqtt_subscribe(self, client:mqtt.Client, userdata:Any, mid:int, granted_qos:Any) -> None:
+        topic = self._mqtt_subscriptions.pop(mid, None)
         try:
             if any(qos == 0x80 for qos in granted_qos):
-                _LOGGER.warning("Subscription failed, will try to reconnect MQTT in 300 seconds")
+                _LOGGER.warning("Subscription to %s failed, will try to reconnect MQTT in 300 seconds", topic)
                 # wait=False: this callback runs on the paho-mqtt network thread, so
                 # blocking it for 300s here would stall the loop (pings, reconnects,
                 # other callbacks). reconnect_mqtt(): the transport can still look
@@ -1045,12 +1084,12 @@ class StellantisVehicles(StellantisOauth):
                 # must not apply here.
                 self.do_async(self.reconnect_mqtt(), 300, wait=False)
             else:
-                _LOGGER.debug("MQTT subscription completed (QoS: %s)", granted_qos)
+                _LOGGER.debug("MQTT subscription to %s completed (QoS: %s)", topic, granted_qos)
         except Exception:
             _LOGGER.exception("Error in MQTT subscribe callback")
 
     @log_call
-    def _on_mqtt_message(self, client, userdata, msg):
+    def _on_mqtt_message(self, client:mqtt.Client, userdata:Any, msg:mqtt.MQTTMessage) -> None:
         try:
             _LOGGER.debug("MQTT message on %s (qos %s): %s", msg.topic, msg.qos, msg.payload)
             data = json.loads(msg.payload)
@@ -1105,7 +1144,15 @@ class StellantisVehicles(StellantisOauth):
                         _LOGGER.debug("Skip vehicle as sleep mqtt message")
                         return
 
-                    self.do_async(coordinator.update_command_history(data["correlation_id"], result_code), wait=False)
+                    history_code = result_code
+                    resp_data = data.get("resp_data") or {}
+                    # As in the vendor app, only for failed commands: on success
+                    # /Doors' lock_resp_state is just the new door state.
+                    if resp_data and result_code not in COMMAND_STATUS_SUCCESS:
+                        pending_command = coordinator._commands_history.get(data["correlation_id"])
+                        service = pending_command.get("service") if pending_command else None
+                        history_code = resolve_mqtt_resp_data_error(service, resp_data, result_code)
+                    self.do_async(coordinator.update_command_history(data["correlation_id"], history_code), wait=False)
                 else:
                     _LOGGER.error("No result code")
 

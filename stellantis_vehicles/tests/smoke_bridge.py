@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 from datetime import timedelta
+from types import SimpleNamespace
 
 APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app")
 sys.path.insert(0, os.path.join(APP_DIR, "hass_shim"))
@@ -20,7 +21,7 @@ sys.path.insert(0, APP_DIR)
 
 from homeassistant.core import HomeAssistant  # noqa: E402
 
-from stellantis_vehicles.const import COMMAND_HISTORY_LIMIT, PENDING_ACTION_TIMEOUT  # noqa: E402
+from stellantis_vehicles.const import COMMAND_HISTORY_LIMIT, MQTT_RESP_TOPIC, PENDING_ACTION_TIMEOUT  # noqa: E402
 from stellantis_vehicles.stellantis import StellantisVehicles  # noqa: E402
 from stellantis_vehicles.utils import get_datetime  # noqa: E402
 from bridge.mqtt_bridge import MqttBridge  # noqa: E402
@@ -72,12 +73,20 @@ class FakeUpstreamMqtt:
         return True
 
 
+class FakeSubscribeClient:
+    """paho client as seen by the upstream on_connect callback."""
+
+    def subscribe(self, topic, qos=0):
+        return 0, 1
+
+
 class FakeStellantis(StellantisVehicles):
     """Stubs every network call of the vendored client."""
 
     def __init__(self, hass):
         super().__init__(hass)
         self._mqtt = FakeUpstreamMqtt()
+        self._mqtt_connected = True
         self.sent = []
         self.status = STATUS
         self.maintenance = {"mileageBeforeMaintenance": 15000, "daysBeforeMaintenance": 200,
@@ -270,6 +279,37 @@ async def main():
     coordinator._prune_command_history()
     check(len(coordinator._commands_history) == COMMAND_HISTORY_LIMIT and "action1" not in coordinator._commands_history,
           "command history bounded, oldest dropped")
+
+    print("mqtt connection state + resp_data")
+    stellantis._on_mqtt_disconnect(None, None, 0)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    check(s("remote_commands") == "OFF" and av("horn") == "offline",
+          "upstream MQTT disconnect pushes remote_commands OFF and buttons offline without a poll")
+    stellantis.save_config({"customer_id": "MN-1"})
+    stellantis._on_mqtt_connect(FakeSubscribeClient(), None, {}, 0)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    check(s("remote_commands") == "ON" and av("horn") == "online", "MQTT reconnect turns them back on")
+    await bridge._dispatch_command(f"stellantis/{VIN}/button/doors_lock/set", "PRESS")
+    action_id = coordinator._pending_action_id
+    stellantis._on_mqtt_message(None, None, SimpleNamespace(
+        topic=MQTT_RESP_TOPIC + "MN-1/response", qos=0,
+        payload=json.dumps({"vin": VIN, "correlation_id": action_id, "return_code": "2",
+                            "resp_data": {"lock_resp_state": 2}}).encode()))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    updates = coordinator._commands_history[action_id]["updates"]
+    check(updates and updates[-1]["info"] == "doors_discarded_door_open" and not coordinator.pending_action,
+          f"resp_data failure reason stored in the history: {updates}")
+    check("doors_discarded_door_open" not in s("command_status"), f"resp_data reason translated: {s('command_status')!r}")
+    stellantis._vehicles = [{"vin": "OTHERVIN"}]
+    await coordinator._reconcile_vehicle()
+    check(any(n["id"] == f"vehicle_removed_{VIN}" for n in hass.notifications), "vehicle removed notification")
+    stellantis._vehicles = [vehicle]
+    coordinator._clear_vehicle_removed()
+    check(not any(n["id"] == f"vehicle_removed_{VIN}" for n in hass.notifications),
+          "vehicle removed notification cleared once the vehicle answers again")
 
     print("charge end + last trip")
     ended = copy.deepcopy(STATUS)

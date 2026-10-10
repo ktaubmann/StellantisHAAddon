@@ -16,3 +16,7 @@ def async_create(hass, message: str, title: str | None = None, notification_id: 
         "message": message,
         "created": datetime.now(timezone.utc).isoformat(),
     })
+
+
+def async_dismiss(hass, notification_id: str) -> None:
+    hass.notifications[:] = [n for n in hass.notifications if n.get("id") != notification_id]

@@ -12,7 +12,9 @@ from homeassistant.util import dt
 
 from .exceptions import RateLimitException
 from .const import (
-    FIELD_ANONYMIZE_LOGS
+    FIELD_ANONYMIZE_LOGS,
+    MQTT_RESP_DATA_ERROR_CODES,
+    MQTT_CHARGING_RESP_DATA_ERROR_CODES
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +61,19 @@ def date_from_pt_string(pt_string, start_date=None):
         _LOGGER.warning(str(e))
         return None
 
+def vehicle_removed_issue_id(vin:str) -> str:
+    return f"vehicle_removed_{vin}"
+
+def resolve_mqtt_resp_data_error(service:str | None, resp_data:dict[str, Any], default:str) -> str:
+    """ Failure reason from the resp_data of an MQTT command response, or default when it has none. """
+    if not service:
+        return default
+    error_fields = MQTT_CHARGING_RESP_DATA_ERROR_CODES if service.startswith("/VehCharge") else MQTT_RESP_DATA_ERROR_CODES.get(service, {})
+    for field, codes in error_fields.items():
+        if (error_code := resp_data.get(field)) is not None:
+            return codes.get(error_code, default)
+    return default
+
 def replace_string_placeholders(string, placeholders=None):
     if placeholders is None:
         placeholders = {}
@@ -66,6 +81,28 @@ def replace_string_placeholders(string, placeholders=None):
         value = placeholders[placeholder]
         string = string.replace("{" + placeholder + "}", str(value))
     return string
+
+def parse_vehicle_rights(response:Any) -> dict[str, dict[str, Any]]:
+    """Flatten a vehicle rights response into {fds code: {"name", "mqtt_services"}}.
+
+    The services come grouped per telematics unit; a code listed under more
+    than one unit is kept once.
+    """
+    features:dict[str, dict[str, Any]] = {}
+    services_by_unit = response.get("services") if isinstance(response, dict) else None
+    if not isinstance(services_by_unit, dict):
+        return features
+    for services in services_by_unit.values():
+        for service in services or []:
+            if not isinstance(service, dict):
+                continue
+            code = service.get("code")
+            if code and code not in features:
+                features[code] = {
+                    "name": service.get("name"),
+                    "mqtt_services": service.get("mqtt_services") or [],
+                }
+    return features
 
 def sort_dict(items, ordered_keys=None):
     if ordered_keys is None or not isinstance(ordered_keys, list):

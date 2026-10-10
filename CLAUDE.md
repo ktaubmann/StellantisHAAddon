@@ -22,7 +22,9 @@ Container zusammenfasst. Fahrzeuge kommen per MQTT Discovery nach HA.
 - `app/stellantis_vehicles/base.py`: Port des Upstream-Coordinators (Polling, updatedAt-Vergleich,
   Leerantworten, Command-History, send_*-Kommandos, Ladelimit, ABRP, letzte Fahrt). Kein HA.
   `_sensors` ist der gemeinsame Zustand mit der Bridge — gleiche Ein-Zyklus-Verzögerung wie Upstream.
-  Stand Upstream da32364: Wartungsabfrage (Fehler behalten die alten Werte, leere Antwort schaltet sie ab —
+  Stand Upstream da32364 (seit 7f75d7d zusätzlich: MQTT-Verbindungswechsel ruft `async_update_listeners`,
+  `resp_data`-Fehlergrund über `_commands_history[id]["service"]`, `vehicle_removed`-Notification wird
+  beim Wiederauftauchen per `async_dismiss` entfernt): Wartungsabfrage (Fehler behalten die alten Werte, leere Antwort schaltet sie ab —
   bewusste Abweichung, Upstream lässt dann das ganze Update scheitern), Befehlssperre solange ein Befehl
   offen ist (`pending_action`, 60 s Timeout, Ablehnung als `ServiceValidationError`), History-Einträge mit
   `service`/`message`/`retried`/`sent_at` (braucht der MQTT-400-Retry in stellantis.py), max. 50 Einträge.
@@ -36,7 +38,7 @@ Container zusammenfasst. Fahrzeuge kommen per MQTT Discovery nach HA.
   (`/data/config_entry.json`, Knoten `vehicles.<vin>`); Topics/unique_ids enthalten die Komponente,
   weil `battery_charging_limit` als number *und* switch existiert. `default_entity_id` braucht HA ≥ 2025.10.
 - Offline-Test: `cd stellantis_vehicles && ../.venv/Scripts/python tests/smoke_bridge.py`
-  (Fake-Client + Recorder statt paho, 52 Checks). Vor jeder Änderung an Bridge/Coordinator laufen lassen.
+  (Fake-Client + Recorder statt paho, 81 Checks). Vor jeder Änderung an Bridge/Coordinator laufen lassen.
 
 ## Ingress-UI (Schritt 2, fertig)
 - `app/web/setup.py`: `SetupFlow` = Ersatz für die Upstream-`config_flow.py`, ohne HTML. Schritte
@@ -145,6 +147,8 @@ Zweites Add-on `stellantis_login_worker` 0.2.0 (mit Supervisor-Discovery) — HT
 (`LOGIN_DEADLINE_S`), Notbremse 255 s beim Aufrufer; nur `OauthBrowserError(public=True)` geht an Nutzer;
 nur dokumentierte Gigya-Codes brechen ab; Worker antwortet bei parallelem Login mit 429.
 Echter Login mit Playwright 1.63 auf aarch64 noch nicht verifiziert.
+Unreleased (10.10.2026): Upstream auf develop 7f75d7d (2026.10.1-beta.1) gehoben. Shim brauchte keinen neuen
+Import; Bridge prüft `_mqtt_connected` wie Upstream. Offline-Tests grün, live noch nicht gelaufen.
 
 ## Nächste Schritte
 6. Auf dem Pi: Add-on-Store → Repositories →

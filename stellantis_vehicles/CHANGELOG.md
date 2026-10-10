@@ -1,3 +1,17 @@
+## Unreleased
+
+Upstream integration updated from develop da32364 (2026.9.5-beta.1) to develop 7f75d7d
+(2026.10.1-beta.1).
+
+- `remote_commands` and the command buttons follow the vehicle MQTT connection right away
+  instead of on the next poll; a refused MQTT connection no longer counts as connected
+- Failed commands show the vehicle's reason in `command_status` (e.g. door open, charging
+  already in progress) instead of a bare result code
+- OTP: a failed activation is reported as an error instead of producing an invalid code
+- Token refresh timers are no longer re-armed while the add-on shuts down
+- The "vehicle no longer linked" notification disappears once the vehicle answers again
+- Updated French, German, Italian and Polish translations
+
 ## 0.2.2
 
 - Keep browser-login handling in sync with the login worker: conservative

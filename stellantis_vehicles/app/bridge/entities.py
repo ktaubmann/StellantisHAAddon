@@ -102,6 +102,13 @@ def get_value_from_map(vehicle_data: dict, value_map: list):
     return value
 
 
+def _stellantis_mqtt_connected(stellantis) -> bool:
+    """Upstream check: paho still reports is_connected() while on_disconnect
+    runs, so the client's own _mqtt_connected flag has to agree as well."""
+    return bool(stellantis and stellantis._mqtt and stellantis._mqtt.is_connected()
+                and stellantis._mqtt_connected)
+
+
 class Entity:
     """Base for everything the bridge publishes for one vehicle."""
 
@@ -174,8 +181,7 @@ class Entity:
         """Base availability for remote commands (upstream). A pending command
         no longer makes buttons unavailable: the coordinator rejects a second
         command and ``binary_sensor.command_pending`` shows the state."""
-        stellantis = self.stellantis
-        mqtt_is_connected = bool(stellantis and stellantis._mqtt and stellantis._mqtt.is_connected())
+        mqtt_is_connected = _stellantis_mqtt_connected(self.stellantis)
         command_is_enabled = self.name not in self.coordinator.disabled_commands
         return mqtt_is_connected and command_is_enabled
 
@@ -498,8 +504,7 @@ class RemoteCommandsBinarySensor(Entity):
     component = "binary_sensor"
 
     def update(self) -> None:
-        stellantis = self.stellantis
-        self.native_value = bool(stellantis and stellantis._mqtt and stellantis._mqtt.is_connected())
+        self.native_value = _stellantis_mqtt_connected(self.stellantis)
 
 
 class CommandPendingBinarySensor(Entity):
