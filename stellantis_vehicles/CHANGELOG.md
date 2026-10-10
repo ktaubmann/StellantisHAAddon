@@ -1,4 +1,4 @@
-## Unreleased
+## 0.2.3
 
 Upstream integration updated from develop da32364 (2026.9.5-beta.1) to develop 7f75d7d
 (2026.10.1-beta.1).

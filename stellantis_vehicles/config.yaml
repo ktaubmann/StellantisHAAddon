@@ -1,5 +1,5 @@
 name: Stellantis Vehicles
-version: 0.2.2
+version: 0.2.3
 slug: stellantis_vehicles
 description: Stellantis (Peugeot, Citroën, DS, Opel, Vauxhall) vehicles via MQTT, with local OAuth login
 url: https://github.com/ktaubmann/StellantisHAAddon

@@ -147,7 +147,7 @@ Zweites Add-on `stellantis_login_worker` 0.2.0 (mit Supervisor-Discovery) — HT
 (`LOGIN_DEADLINE_S`), Notbremse 255 s beim Aufrufer; nur `OauthBrowserError(public=True)` geht an Nutzer;
 nur dokumentierte Gigya-Codes brechen ab; Worker antwortet bei parallelem Login mit 429.
 Echter Login mit Playwright 1.63 auf aarch64 noch nicht verifiziert.
-Unreleased (10.10.2026): Upstream auf develop 7f75d7d (2026.10.1-beta.1) gehoben. Shim brauchte keinen neuen
+0.2.3 (10.10.2026, nur stellantis_vehicles): Upstream auf develop 7f75d7d (2026.10.1-beta.1) gehoben. Shim brauchte keinen neuen
 Import; Bridge prüft `_mqtt_connected` wie Upstream. Offline-Tests grün, live noch nicht gelaufen.
 
 ## Nächste Schritte
