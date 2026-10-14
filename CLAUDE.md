@@ -155,7 +155,10 @@ Import; Bridge prüft `_mqtt_connected` wie Upstream. Offline-Tests grün, live 
    `https://github.com/ktaubmann/StellantisHAAddon` → installieren, Optionen setzen, Ingress-Login.
    Vorher die HACS-Integration `stellantis_vehicles` deaktivieren (doppeltes Polling, OTP-Gerätelimit).
    Erster Lauf mit Supervisor-MQTT prüfen (`services: mqtt:want`, `run`-Skript setzt `STELLANTIS_MQTT_*`).
-7. Neue Version = `version:` in `config.yaml` anheben + Tag `vX.Y.Z` pushen (Workflow baut auch bei Tags).
+7. Neue Version = `version:` in `config.yaml` anheben + CHANGELOG-Abschnitt `## X.Y.Z`, nach `main` pushen (baut und
+   veröffentlicht die Images). Tag + GitHub-Release dann per Workflow „Create release“ (`release.yaml`,
+   `workflow_dispatch`, Eingaben `addon`, optional `target`-SHA); Notes = CHANGELOG-Abschnitt + Installationshinweis.
+   Grund: Aus Cloud-Sessions gehen Tag-Pushes nicht durch (Git-Proxy), der Workflow legt den Tag serverseitig an.
 8. Optional Image verkleinern (`playwright install chromium --no-shell` spart ~150 MB, dann greift der
    Fallback in `_launch` nicht mehr).
 

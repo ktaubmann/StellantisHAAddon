@@ -1,0 +1,75 @@
+name: Create release
+# Tag + GitHub release for the version in <addon>/config.yaml, notes taken
+# from that version's CHANGELOG section. Runs server-side so releases do not
+# depend on pushing tags from a local checkout.
+on:
+  workflow_dispatch:
+    inputs:
+      addon:
+        description: Add-on whose config.yaml version is released
+        type: choice
+        options: [stellantis_vehicles, stellantis_login_worker]
+        default: stellantis_vehicles
+      target:
+        description: Commit to tag (default the dispatched commit)
+        type: string
+        required: false
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Install metadata reader
+        run: python -m pip install PyYAML==6.0.3
+      - name: Build release notes
+        id: notes
+        env:
+          ADDON: ${{ inputs.addon }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          import re
+          from pathlib import Path
+          import yaml
+
+          addon = Path(os.environ["ADDON"])
+          config = yaml.safe_load((addon / "config.yaml").read_text())
+          version = str(config["version"])
+          changelog = (addon / "CHANGELOG.md").read_text()
+          match = re.search(rf"^## {re.escape(version)}\s*$(.*?)(?=^## |\Z)", changelog, re.M | re.S)
+          if not match or not match.group(1).strip():
+              raise SystemExit(f"No CHANGELOG section for {version} in {addon}/CHANGELOG.md")
+          repo = os.environ["REPO"]
+          notes = (
+              match.group(1).strip()
+              + "\n\n## Installation / update\n\n"
+              + f"Settings → Add-ons → {config['name']} → Update. If the update is not offered yet:\n"
+              + "Add-on Store → ⋮ → Check for updates.\n\n"
+              + f"Repository: `https://github.com/{repo}`\n\n"
+              + f"Full list: [CHANGELOG](https://github.com/{repo}/blob/main/{addon}/CHANGELOG.md)\n"
+          )
+          Path("release-notes.md").write_text(notes)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"tag=v{version}", file=output)
+              print(f"title={version} - {config['name']} add-on", file=output)
+          PYTHON
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.notes.outputs.tag }}
+          TITLE: ${{ steps.notes.outputs.title }}
+          TARGET: ${{ inputs.target || github.sha }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists"
+            exit 1
+          fi
+          gh release create "$TAG" --target "$TARGET" --title "$TITLE" --notes-file release-notes.md
