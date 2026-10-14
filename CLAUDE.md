@@ -153,6 +153,8 @@ nur dokumentierte Gigya-Codes brechen ab; Worker antwortet bei parallelem Login 
 Echter Login mit Playwright 1.63 auf aarch64 noch nicht verifiziert.
 0.2.3 (10.10.2026, nur stellantis_vehicles): Upstream auf develop 7f75d7d (2026.10.1-beta.1) gehoben. Shim brauchte keinen neuen
 Import; Bridge prüft `_mqtt_connected` wie Upstream. Offline-Tests grün, live noch nicht gelaufen.
+0.2.4 (14.10.2026, nur stellantis_vehicles): Fix der 0.2.3-Regression — keine Entity-Updates vor dem ersten Abruf
+(Neustart während des Ladens beendete `last_charge`). Release-Workflow mit eigenem Tag-Präfix für den Worker.
 
 ## Nächste Schritte
 6. Auf dem Pi: Add-on-Store → Repositories →

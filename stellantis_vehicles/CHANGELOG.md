@@ -1,4 +1,4 @@
-## Unreleased
+## 0.2.4
 
 - Fix: restarting the add-on while the vehicle is charging no longer closes the recorded
   `last_charge` and starts a new one on the first poll (regression in 0.2.3: the vehicle
