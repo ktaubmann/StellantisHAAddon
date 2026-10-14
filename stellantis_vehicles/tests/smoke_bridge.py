@@ -414,6 +414,31 @@ async def main():
     await bridge.detach(VIN, remove=True)
     check(recorder.published[f"homeassistant/sensor/stellantis_{VIN}/battery/config"] == "", "discovery cleared on remove")
 
+    print("listener calls before the first poll")
+    # Restart while charging: the first poll connects the vehicle MQTT client,
+    # whose on_connect notifies the listeners before the status has arrived.
+    stellantis2 = FakeStellantis(HomeAssistant(config_dir=tempfile.mkdtemp(prefix="stellantis_smoke_"),
+                                               language="de", loop=loop))
+    stellantis2.set_entry(stellantis2._hass.config_entries.entry)
+    stellantis2.save_config({"mobile_app": "MyPeugeot", "country_code": "DE"})
+    stellantis2._vehicles = [vehicle]
+    running = {"state": "2026-09-05T08:00:00+00:00", "attributes": {"in_progress": True, "initial_percentage": "40 %"}}
+    stellantis2.update_vehicle_stored_config(VIN, "last_charge", copy.deepcopy(running))
+    coordinator2 = await stellantis2.async_get_coordinator(vehicle)
+    bridge2 = MqttBridge("localhost", 1883, None, None, loop=loop, addon_version="0.1.0")
+    bridge2._client = RecorderClient()
+    bridge2._connected = True
+    await bridge2.attach(coordinator2)
+    coordinator2.async_update_listeners()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    check(stellantis2.get_vehicle_stored_config(VIN, "last_charge") == running,
+          "empty-data listener call keeps a stored running charge")
+    await coordinator2.async_refresh()
+    stored = stellantis2.get_vehicle_stored_config(VIN, "last_charge")
+    check(stored["state"] == running["state"] and stored["attributes"].get("in_progress") is True,
+          f"first poll continues the running charge: {stored}")
+
     print(f"\n{check.failures} failures")
     print(f"config entry: {os.path.join(data_dir, 'config_entry.json')}")
     return check.failures

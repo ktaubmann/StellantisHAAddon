@@ -274,6 +274,14 @@ class MqttBridge:
         binding = self._bindings.get(coordinator.vin)
         if not binding:
             return
+        if not coordinator.data:
+            # No successful poll yet (upstream creates its entities only after
+            # the first refresh). Listener calls still arrive here: a failed
+            # first poll, or the MQTT connect the first poll itself starts.
+            # Updating on empty data would e.g. end a stored running charge.
+            if self._connected:
+                self._publish_states(binding)
+            return
         for entity in binding.entities:
             try:
                 entity.update()

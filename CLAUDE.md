@@ -33,12 +33,16 @@ Container zusammenfasst. Fahrzeuge kommen per MQTT Discovery nach HA.
   Reihenfolge = Upstream-PLATFORMS (binary_sensor vor sensor!), sonst hinkt `last_charge` nach.
 - `app/bridge/mqtt_bridge.py`: paho-Client, Discovery pro Entity, State/Attribute/Availability,
   Command-Dispatch (seriell). paho-Callbacks laufen im Netzwerk-Thread → `run_coroutine_threadsafe`.
+  `on_coordinator_update` macht vor dem ersten erfolgreichen Abruf (`coordinator.data` leer) keine Entity-Updates:
+  Upstream legt Entities erst nach dem ersten Refresh an, bei uns kämen sonst Listener-Aufrufe mit leeren Daten an
+  (fehlgeschlagener erster Abruf; seit 7f75d7d auch der MQTT-Connect, den der erste Abruf selbst auslöst) und
+  würden z. B. einen gespeicherten laufenden `last_charge` beenden.
 - Abweichungen zu Upstream, durch MQTT erzwungen: keine `time`-Plattform → `battery_charging_start`
   ist ein `text` mit `HH:MM`; number/switch/text/last_charge persistieren in der Stored Config
   (`/data/config_entry.json`, Knoten `vehicles.<vin>`); Topics/unique_ids enthalten die Komponente,
   weil `battery_charging_limit` als number *und* switch existiert. `default_entity_id` braucht HA ≥ 2025.10.
 - Offline-Test: `cd stellantis_vehicles && ../.venv/Scripts/python tests/smoke_bridge.py`
-  (Fake-Client + Recorder statt paho, 81 Checks). Vor jeder Änderung an Bridge/Coordinator laufen lassen.
+  (Fake-Client + Recorder statt paho, 83 Checks). Vor jeder Änderung an Bridge/Coordinator laufen lassen.
 
 ## Ingress-UI (Schritt 2, fertig)
 - `app/web/setup.py`: `SetupFlow` = Ersatz für die Upstream-`config_flow.py`, ohne HTML. Schritte
@@ -157,7 +161,9 @@ Import; Bridge prüft `_mqtt_connected` wie Upstream. Offline-Tests grün, live 
    Erster Lauf mit Supervisor-MQTT prüfen (`services: mqtt:want`, `run`-Skript setzt `STELLANTIS_MQTT_*`).
 7. Neue Version = `version:` in `config.yaml` anheben + CHANGELOG-Abschnitt `## X.Y.Z`, nach `main` pushen (baut und
    veröffentlicht die Images). Tag + GitHub-Release dann per Workflow „Create release“ (`release.yaml`,
-   `workflow_dispatch`, Eingaben `addon`, optional `target`-SHA); Notes = CHANGELOG-Abschnitt + Installationshinweis.
+   `workflow_dispatch`, Eingaben `addon`, optional `target`-SHA; Version und Notes kommen aus dem getaggten Commit);
+   Notes = CHANGELOG-Abschnitt + Installationshinweis. Tags: `vX.Y.Z` für stellantis_vehicles,
+   `login-worker-vX.Y.Z` für den Worker (Versionen laufen unabhängig).
    Grund: Aus Cloud-Sessions gehen Tag-Pushes nicht durch (Git-Proxy), der Workflow legt den Tag serverseitig an.
 8. Optional Image verkleinern (`playwright install chromium --no-shell` spart ~150 MB, dann greift der
    Fallback in `_launch` nicht mehr).
