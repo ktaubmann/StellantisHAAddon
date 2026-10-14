@@ -1,7 +1,8 @@
 name: Create release
 # Tag + GitHub release for the version in <addon>/config.yaml, notes taken
 # from that version's CHANGELOG section. Runs server-side so releases do not
-# depend on pushing tags from a local checkout.
+# depend on pushing tags from a local checkout. Both add-ons version
+# independently, so the login worker gets its own tag prefix.
 on:
   workflow_dispatch:
     inputs:
@@ -23,6 +24,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Version and notes must come from the commit that gets tagged.
+          ref: ${{ inputs.target || github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
@@ -58,7 +62,8 @@ jobs:
           )
           Path("release-notes.md").write_text(notes)
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              print(f"tag=v{version}", file=output)
+              prefix = "login-worker-v" if addon.name == "stellantis_login_worker" else "v"
+              print(f"tag={prefix}{version}", file=output)
               print(f"title={version} - {config['name']} add-on", file=output)
           PYTHON
       - name: Create tag and release

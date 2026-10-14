@@ -1,3 +1,9 @@
+## Unreleased
+
+- Fix: restarting the add-on while the vehicle is charging no longer closes the recorded
+  `last_charge` and starts a new one on the first poll (regression in 0.2.3: the vehicle
+  MQTT connect updated the entities before the first status had arrived)
+
 ## 0.2.3
 
 Upstream integration updated from develop da32364 (2026.9.5-beta.1) to develop 7f75d7d
