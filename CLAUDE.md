@@ -160,6 +160,7 @@ Echter Login mit Playwright 1.63 auf aarch64 noch nicht verifiziert.
 Import; Bridge prüft `_mqtt_connected` wie Upstream. Offline-Tests grün, live noch nicht gelaufen.
 0.2.4 (14.10.2026, nur stellantis_vehicles): Fix der 0.2.3-Regression — keine Entity-Updates vor dem ersten Abruf
 (Neustart während des Ladens beendete `last_charge`). Release-Workflow mit eigenem Tag-Präfix für den Worker.
+0.2.5 (15.10.2026, nur stellantis_vehicles): „Neu-Login nötig“ wird nur einmal gemeldet statt alle 30 min.
 
 ## Nächste Schritte
 6. Auf dem Pi: Add-on-Store → Repositories →
