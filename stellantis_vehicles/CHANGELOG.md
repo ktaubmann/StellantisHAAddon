@@ -1,4 +1,4 @@
-## Unreleased
+## 0.2.6
 
 - When Stellantis invalidates the login, the add-on signs in again by itself with the
   e-mail and password from the options (`oauth_mode: browser`): right away, then after

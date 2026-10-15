@@ -168,6 +168,8 @@ Import; Bridge prüft `_mqtt_connected` wie Upstream. Offline-Tests grün, live 
 0.2.4 (14.10.2026, nur stellantis_vehicles): Fix der 0.2.3-Regression — keine Entity-Updates vor dem ersten Abruf
 (Neustart während des Ladens beendete `last_charge`). Release-Workflow mit eigenem Tag-Präfix für den Worker.
 0.2.5 (15.10.2026, nur stellantis_vehicles): „Neu-Login nötig“ wird nur einmal gemeldet statt alle 30 min.
+0.2.6 (15.10.2026, nur stellantis_vehicles): automatischer Neu-Login mit den Zugangsdaten aus den Optionen
+(browser-Modus), Backoff, Stopp bei Ablehnung. Live noch nicht gelaufen.
 
 ## Nächste Schritte
 6. Auf dem Pi: Add-on-Store → Repositories →
