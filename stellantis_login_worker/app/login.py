@@ -67,6 +67,11 @@ class OauthBrowserError(RuntimeError):
         self.public = public
 
 
+class OauthLoginRejected(OauthBrowserError):
+    """The provider refused the credentials (documented rejection code);
+    retrying with the same credentials only risks an account lock."""
+
+
 def public_login_error(error: Exception) -> str:
     """Expose only our fixed messages, never arbitrary browser exception text."""
     if isinstance(error, OauthBrowserError) and error.public:
@@ -141,7 +146,7 @@ async def _wait_login_result(code, failure, consent, timeout_s):
     try:
         while True:
             if failure.done():
-                raise OauthBrowserError(failure.result(), public=True)
+                raise OauthLoginRejected(failure.result(), public=True)
             if code.done():
                 return code.result()
             if consent in watchers and consent.done():

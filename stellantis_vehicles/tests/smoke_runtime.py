@@ -119,6 +119,7 @@ async def main():
     c1.on_auth_failed()
     check(flow.step == STEP_LOGIN and "login required" in state.get("auth", ""), "flow back to login, state shows it")
     check(any(n.get("id") == "reauth" for n in hass.notifications), "reauth notification")
+    check(runtime._relogin_handle is None, "manual mode: no automatic login")
     check(recorder.published[f"stellantis/{sb.VIN}/available"] == "offline", "vehicle offline after auth failure")
 
     print("re-login restarts polling")
@@ -146,6 +147,81 @@ async def main():
     c1.on_auth_failed()
     check(not hass.notifications, "repeated auth failures while waiting for the login: no new notification")
     await runtime.stop()
+
+    print("automatic login with the credentials from the options")
+    import oauth_browser.login as browser_login
+    from runtime import NOTIFY_REJECTED, NOTIFY_RELOGIN
+    calls = []
+    outcome = {"raise": None}
+
+    async def fake_fetch(url, email, password, **kwargs):
+        calls.append((email, password))
+        if outcome["raise"]:
+            raise outcome["raise"]
+        return "AUTOCODE"
+
+    browser_login.fetch_oauth_code = fake_fetch
+    auto_options = dict(options, oauth_mode="browser", email="me@example.com", password="pw")
+    auto_state = {"vehicles": [], "mqtt": "x"}
+    auto_runtime = None
+
+    async def auto_configured():
+        await auto_runtime.start()
+
+    auto_flow = SetupFlow(hass, stellantis, auto_options, auto_configured)
+    auto_runtime = Runtime(hass, stellantis, None, auto_flow, auto_state)
+    await auto_runtime.start()
+    check(auto_flow.can_relogin and not flow.can_relogin, "automatic login only with browser mode and credentials")
+
+    async def settle():
+        for _ in range(50):
+            await asyncio.sleep(0)
+            task = auto_runtime._relogin_task
+            if auto_runtime._relogin_handle is None and (task is None or task.done()):
+                return
+            if task is not None and not task.done():
+                await task
+
+    hass.notifications.clear()
+    stellantis.oauth_calls_before = len(calls)
+    hass.config_entries.entry.async_start_reauth(hass)
+    check(any(n["id"] == "reauth" and n["message"] == NOTIFY_RELOGIN for n in hass.notifications),
+          "notification says the add-on logs in again by itself")
+    await settle()
+    check(calls == [("me@example.com", "pw")], f"browser login with the option credentials: {calls}")
+    check(not auto_runtime._login_required and "auth" not in auto_state and auto_flow.step == STEP_DONE,
+          "login restored without the user")
+    check(not any(n["id"] == "reauth" for n in hass.notifications), "login notification dismissed after success")
+    check(all(c.running for c in auto_runtime.coordinators.values()), "polling again after the automatic login")
+
+    print("automatic login: transient failure retries later")
+    from oauth_browser.login import OauthBrowserError, OauthLoginRejected
+    outcome["raise"] = OauthBrowserError("Login deadline reached", public=True)
+    calls.clear()
+    previous_task = auto_runtime._relogin_task
+    hass.config_entries.entry.async_start_reauth(hass)
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if auto_runtime._relogin_task is not previous_task:
+            break
+    await auto_runtime._relogin_task
+    check(len(calls) == 1 and auto_runtime._login_required and auto_runtime._relogin_handle is not None,
+          "failed attempt schedules the next one")
+    check(auto_runtime._relogin_attempt == 2, "backoff advances")
+    hass.config_entries.entry.async_start_reauth(hass)
+    check(len(calls) == 1, "repeated reauth requests do not start extra logins")
+
+    print("automatic login: rejection stops")
+    outcome["raise"] = OauthLoginRejected("Login endpoint returned error 403042; manual sign-in may be required",
+                                          public=True)
+    auto_runtime._relogin_handle.cancel()
+    auto_runtime._start_relogin()
+    await auto_runtime._relogin_task
+    check(len(calls) == 2 and auto_runtime._relogin_handle is None, "no further attempts after a rejection")
+    check(any(n["id"] == "reauth" and n["message"] == NOTIFY_REJECTED for n in hass.notifications),
+          "notification asks for a manual login")
+    check(auto_flow.step == STEP_LOGIN and "403042" in (auto_flow.error or ""), "login page shows the rejection")
+    await auto_runtime.stop()
 
     print("retry on API error")
     state2 = {"vehicles": []}

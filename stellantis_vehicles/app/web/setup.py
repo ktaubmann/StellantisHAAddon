@@ -71,6 +71,12 @@ class SetupFlow:
         # Set while remote commands are being reconfigured: the flag in the
         # stored config is already False, but the OTP step must still run.
         self._force_otp = False
+        # Set by an unattended login when the provider refused the credentials.
+        self._login_rejected = False
+        # Set by reauth(): the stored refresh token is dead, so the login step
+        # stays open until a login succeeds (a failed attempt must not fall
+        # back to "done" just because the old token is still stored).
+        self._reauth_pending = False
         # Upstream option defaults; hass_notify() stays silent until
         # `notifications` is stored, so persist them before the first step.
         if FIELD_NOTIFICATIONS not in self.entry:
@@ -104,7 +110,7 @@ class SetupFlow:
         return self.entry.get(FIELD_REMOTE_COMMANDS) is True and bool(self.entry.get("mqtt", {}).get("access_token"))
 
     def _derive_step(self) -> str:
-        if not self.configured:
+        if not self.configured or self._reauth_pending:
             return STEP_LOGIN
         if self._force_otp:
             return STEP_OTP
@@ -240,10 +246,38 @@ class SetupFlow:
             raise SetupError(self._text("no_credentials"))
         self._start(self._browser_login(email, password))
 
-    async def _browser_login(self, email: str, password: str) -> None:
+    @property
+    def can_relogin(self) -> bool:
+        """Whether an expired login can be renewed without the user: browser
+        mode with e-mail and password in the add-on options."""
+        return (self.oauth_mode == "browser" and bool(self._options.get("email"))
+                and bool(self._options.get("password")))
+
+    async def relogin(self) -> str:
+        """Unattended browser login with the credentials from the add-on options.
+
+        Returns "ok", "rejected" (the provider refused the credentials),
+        "busy" (another step is running, e.g. a manual login) or "failed".
+        """
+        if self.busy:
+            return "busy"
+        self._login_rejected = False
+        try:
+            self._ensure_mobile_app()
+            self._start(self._browser_login(self._options.get("email") or "",
+                                            self._options.get("password") or "", unattended=True))
+        except SetupError as err:
+            self.error = str(err)
+            return "failed"
+        await self._task
+        if self._login_rejected:
+            return "rejected"
+        return "failed" if self.error else "ok"
+
+    async def _browser_login(self, email: str, password: str, unattended: bool = False) -> None:
         await self.load_translations()
         # imported late: playwright is optional locally
-        from oauth_browser.login import LOGIN_BACKSTOP_S, fetch_oauth_code, public_login_error
+        from oauth_browser.login import LOGIN_BACKSTOP_S, OauthLoginRejected, fetch_oauth_code, public_login_error
         try:
             # fetch_oauth_code enforces its own deadline; this only catches a hung browser start.
             oauth_code = await asyncio.wait_for(
@@ -254,11 +288,12 @@ class SetupFlow:
         except asyncio.TimeoutError as err:
             raise SetupError(self._error_message("get_oauth_code", "timeout")) from err
         except Exception as err:  # noqa: BLE001
+            self._login_rejected = isinstance(err, OauthLoginRejected)
             # Browser errors can carry URLs or page text; show only our fixed messages.
             raise SetupError(self._error_message("get_oauth_code", public_login_error(err))) from err
-        await self._finish_login(oauth_code)
+        await self._finish_login(oauth_code, unattended)
 
-    async def _finish_login(self, oauth_code: str) -> None:
+    async def _finish_login(self, oauth_code: str, unattended: bool = False) -> None:
         await self.load_translations()
         self._stellantis.logger_filter.add_custom_value(oauth_code)
         self._stellantis.save_config({"oauth_code": oauth_code})
@@ -285,8 +320,15 @@ class SetupFlow:
             if not self.entry.get("customer_id"):
                 data["customer_id"] = "MN-" + str(uuid4()).replace("-", "")[:16]
         self._store(data)
+        self._reauth_pending = False
         self.message = self._text("login_ok")
-        if self.remote_commands_wanted and not self.remote_commands_ready:
+        if unattended:
+            # Nobody is there to type an SMS code: restart polling now; if the
+            # OTP step is still open, it waits on the page.
+            self.step = self._derive_step()
+            if self._on_complete:
+                await self._on_complete()
+        elif self.remote_commands_wanted and not self.remote_commands_ready:
             # Straight on to the OTP step: fetch customer id and trigger the SMS
             await self._request_sms()
         else:
@@ -361,6 +403,7 @@ class SetupFlow:
 
     def reauth(self) -> None:
         """Back to the login step, keeping everything else."""
+        self._reauth_pending = True
         self.step = STEP_LOGIN
 
     # --- completion ------------------------------------------------------------

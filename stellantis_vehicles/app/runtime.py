@@ -17,6 +17,14 @@ from stellantis_vehicles.const import UPDATE_INTERVAL
 _LOGGER = logging.getLogger(__name__)
 
 RETRY_SECONDS = 60
+# Delays before each automatic login attempt after the login expired; the
+# last one repeats. The browser login takes minutes and each attempt is a
+# login at the provider, so this stays slow.
+RELOGIN_DELAYS = (0, 15 * 60, 60 * 60, 6 * 3600, 24 * 3600)
+NOTIFY_RELOGIN = "Anmeldung abgelaufen – das Add-on meldet sich automatisch neu an."
+NOTIFY_MANUAL = "Anmeldung abgelaufen – bitte auf der Add-on-Seite neu anmelden."
+NOTIFY_REJECTED = ("Automatische Anmeldung von Stellantis abgelehnt – bitte Zugangsdaten prüfen "
+                   "und auf der Add-on-Seite neu anmelden.")
 
 
 class Runtime:
@@ -35,6 +43,9 @@ class Runtime:
         # dedupes that into one open flow, here it would mean a new error and
         # notification every half hour until the user logs in again.
         self._login_required = False
+        self._relogin_attempt = 0
+        self._relogin_handle: asyncio.TimerHandle | None = None
+        self._relogin_task: asyncio.Task | None = None
         # Upstream starts HA's reauth flow from the token refresh timers
         # (entry.async_start_reauth); here that means "login required".
         hass.config_entries.entry.on_reauth = lambda: self._auth_failed("reauthentication requested")
@@ -63,7 +74,10 @@ class Runtime:
                     RETRY_SECONDS, lambda: self._hass.loop.create_task(self.start()))
                 return
             self._state.pop("vehicles_error", None)
-            self._login_required = False
+            if self._login_required:
+                self._login_required = False
+                self._cancel_relogin_timer()
+                persistent_notification.async_dismiss(self._hass, "reauth")
 
             if not vehicles:
                 _LOGGER.warning("No vehicles found for this account")
@@ -93,6 +107,9 @@ class Runtime:
         if self._retry:
             self._retry.cancel()
             self._retry = None
+        self._cancel_relogin_timer()
+        if self._relogin_task and not self._relogin_task.done():
+            self._relogin_task.cancel()
         for coordinator in self._coordinators.values():
             await coordinator.stop()
 
@@ -102,12 +119,59 @@ class Runtime:
             _LOGGER.debug("Still waiting for a new login (%s)", reason)
             return
         self._login_required = True
-        _LOGGER.error("Authentication failed (%s), login required via the add-on page", reason)
+        self._relogin_attempt = 0
+        auto = self._flow.can_relogin
+        _LOGGER.error("Authentication failed (%s), %s", reason,
+                      "logging in again with the credentials from the add-on options" if auto
+                      else "login required via the add-on page")
         self._state["auth"] = f"login required: {reason}"
-        persistent_notification.async_create(
-            self._hass, "Anmeldung abgelaufen – bitte auf der Add-on-Seite neu anmelden.",
-            title="Stellantis Vehicles", notification_id="reauth")
+        self._notify_login(NOTIFY_RELOGIN if auto else NOTIFY_MANUAL)
         self._flow.reauth()
+        if auto:
+            self._schedule_relogin()
+
+    def _notify_login(self, message: str) -> None:
+        persistent_notification.async_create(
+            self._hass, message, title="Stellantis Vehicles", notification_id="reauth")
+
+    # --- automatic login -------------------------------------------------------
+    def _schedule_relogin(self) -> None:
+        delay = RELOGIN_DELAYS[min(self._relogin_attempt, len(RELOGIN_DELAYS) - 1)]
+        self._relogin_attempt += 1
+        if delay:
+            _LOGGER.info("Next automatic login attempt in %d minutes", delay // 60)
+        self._relogin_handle = self._hass.loop.call_later(delay, self._start_relogin)
+
+    def _cancel_relogin_timer(self) -> None:
+        if self._relogin_handle:
+            self._relogin_handle.cancel()
+            self._relogin_handle = None
+
+    def _start_relogin(self) -> None:
+        self._relogin_handle = None
+        self._relogin_task = self._hass.loop.create_task(self._relogin())
+
+    async def _relogin(self) -> None:
+        if not self._login_required:
+            return
+        _LOGGER.info("Automatic login attempt %d", self._relogin_attempt)
+        result = await self._flow.relogin()
+        # On success the flow has already restarted the runtime (on_complete),
+        # which clears _login_required once tokens and vehicle list work.
+        if not self._login_required:
+            _LOGGER.info("Automatic login successful, polling again")
+            return
+        if result == "rejected":
+            _LOGGER.error("Stellantis rejected the automatic login, login via the add-on page required")
+            self._notify_login(NOTIFY_REJECTED)
+            return
+        if result == "ok":
+            # New tokens, but the restart did not get the vehicle list yet
+            # (API error: start() retries on its own and clears this then).
+            _LOGGER.warning("Automatic login done, vehicles not reachable yet")
+        else:
+            _LOGGER.warning("Automatic login did not succeed (%s)", self._flow.error or result)
+        self._schedule_relogin()
 
     def _update_state(self, _coordinator) -> None:
         self._state["vehicles"] = [

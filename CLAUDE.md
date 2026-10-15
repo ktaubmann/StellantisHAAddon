@@ -70,6 +70,13 @@ Container zusammenfasst. Fahrzeuge kommen per MQTT Discovery nach HA.
   (in HA ein einziger offener Flow, bei uns sonst ERROR + Notification alle 30 min, live gesehen 13.–15.10.2026).
   Auslöser dort: Refresh-Request lief nach 60 s in den Timeout, der Retry bekam `invalid_grant` — vermutlich hat
   der IdP das Refresh-Token beim ersten Request schon rotiert (Antwort verloren). Upstream-Verhalten, nur Neu-Login hilft.
+  Seit 0.2.6 automatischer Neu-Login: `flow.can_relogin` (browser-Modus + E-Mail/Passwort in den Optionen) →
+  `flow.relogin()` (unbeaufsichtigt, ohne SMS-Schritt, ruft `on_complete` → `runtime.start()`), Backoff
+  `RELOGIN_DELAYS` (0, 15 min, 1 h, 6 h, dann täglich). `OauthLoginRejected` (dokumentierte Gigya-Codes, in beiden
+  `login.py`-Kopien) stoppt die Versuche (Kontosperre vermeiden). Erfolg: `start()` löscht `_login_required`,
+  bricht den Timer ab, entfernt die Notification. Fernbefehle, die Upstream wegen des Auth-Fehlers abgeschaltet hat,
+  bleiben aus (SMS nötig). `SetupFlow._reauth_pending` hält den Login-Schritt offen, bis ein Login gelingt
+  (sonst fiel ein fehlgeschlagener Versuch wegen des noch gespeicherten toten Tokens auf „done“ zurück).
 - `app/main.py`: MQTT-Zugang aus `options.mqtt` oder `STELLANTIS_MQTT_*` (Supervisor-Service via `run`);
   ohne Broker läuft alles, nur ohne Publishing. `ADDON_VERSION` kommt aus `BUILD_VERSION` (Dockerfile).
 - Offline-Test: `tests/smoke_runtime.py`.

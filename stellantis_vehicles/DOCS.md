@@ -22,6 +22,19 @@ names are trademarks of Stellantis N.V. and its subsidiaries.
 The vehicles then appear as devices of the MQTT integration (one device per VIN).
 Requires Home Assistant 2025.10 or newer (MQTT discovery with `default_entity_id`).
 
+### When the login expires
+
+Stellantis can invalidate the stored login (e.g. a token refresh that timed out on their
+side). With `oauth_mode: browser` and e-mail and password in the options, the add-on then
+signs in again by itself: right away, and after a failed attempt again after 15 minutes,
+1 hour, 6 hours and then daily. If Stellantis rejects the credentials, it stops trying (to
+avoid an account lock) and asks for a login on the ingress page. With `manual` mode or
+without stored credentials, the ingress page shows the login form and a notification asks
+for a new login.
+
+Remote commands that were switched off because of the expired login need the OTP step
+again ("Reconfigure remote commands"): the SMS code cannot be entered automatically.
+
 ## Options
 
 | Option | Meaning |
@@ -29,7 +42,7 @@ Requires Home Assistant 2025.10 or newer (MQTT discovery with `default_entity_id
 | `mobile_app` | Brand app of the vehicle (MyPeugeot, MyCitroen, MyDS, MyOpel, MyVauxhall) |
 | `country_code` | Two-letter country code of the account |
 | `email`, `password` | Stellantis credentials, used locally only |
-| `oauth_mode` | `browser` (automatic) or `manual` |
+| `oauth_mode` | `browser` (automatic, also renews an expired login by itself) or `manual` |
 | `remote_commands` | Enable remote commands (requires OTP). `false` switches them off at every start; `true` leaves the decision to the ingress page ("Continue without remote commands" / "Reconfigure remote commands") |
 | `language` | Language of the entity names (15 languages from the upstream integration, English for anything untranslated) and of the ingress page (German or English) |
 | `mqtt.*` | Leave empty to use the broker provided by the Supervisor |

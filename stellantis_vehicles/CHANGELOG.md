@@ -1,3 +1,12 @@
+## Unreleased
+
+- When Stellantis invalidates the login, the add-on signs in again by itself with the
+  e-mail and password from the options (`oauth_mode: browser`): right away, then after
+  15 minutes, 1 hour, 6 hours and daily. A rejected login stops the attempts and asks for
+  a manual login. Polling resumes on its own, the notification disappears.
+- After a failed new login the ingress page keeps showing the login form instead of the
+  status page
+
 ## 0.2.5
 
 - While a new login is required, the add-on reports it once: its "login required" error
