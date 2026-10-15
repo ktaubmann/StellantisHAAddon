@@ -29,6 +29,12 @@ class Runtime:
         self._coordinators: dict = {}
         self._lock = asyncio.Lock()
         self._retry: asyncio.TimerHandle | None = None
+        # Set on the first auth failure, cleared once tokens and vehicle list
+        # work again (after a new login). Upstream keeps retrying a rejected
+        # refresh token every 30 minutes and requests reauth each time; HA
+        # dedupes that into one open flow, here it would mean a new error and
+        # notification every half hour until the user logs in again.
+        self._login_required = False
         # Upstream starts HA's reauth flow from the token refresh timers
         # (entry.async_start_reauth); here that means "login required".
         hass.config_entries.entry.on_reauth = lambda: self._auth_failed("reauthentication requested")
@@ -57,6 +63,7 @@ class Runtime:
                     RETRY_SECONDS, lambda: self._hass.loop.create_task(self.start()))
                 return
             self._state.pop("vehicles_error", None)
+            self._login_required = False
 
             if not vehicles:
                 _LOGGER.warning("No vehicles found for this account")
@@ -91,6 +98,10 @@ class Runtime:
 
     # --- callbacks -----------------------------------------------------------
     def _auth_failed(self, reason: str) -> None:
+        if self._login_required:
+            _LOGGER.debug("Still waiting for a new login (%s)", reason)
+            return
+        self._login_required = True
         _LOGGER.error("Authentication failed (%s), login required via the add-on page", reason)
         self._state["auth"] = f"login required: {reason}"
         persistent_notification.async_create(

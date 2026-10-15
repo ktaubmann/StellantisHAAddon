@@ -141,6 +141,10 @@ async def main():
     check(flow.step == STEP_LOGIN and "reauthentication requested" in state.get("auth", ""),
           "entry.async_start_reauth -> login required")
     check(sum(1 for n in hass.notifications if n.get("id") == "reauth") == 1, "same notification id replaces, no duplicate")
+    hass.notifications.clear()  # user dismissed it
+    hass.config_entries.entry.async_start_reauth(hass)  # upstream's 30-minute retry
+    c1.on_auth_failed()
+    check(not hass.notifications, "repeated auth failures while waiting for the login: no new notification")
     await runtime.stop()
 
     print("retry on API error")

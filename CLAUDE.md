@@ -65,6 +65,11 @@ Container zusammenfasst. Fahrzeuge kommen per MQTT Discovery nach HA.
   `stagger_first_poll` → `coordinator.start()`. Idempotent; API-Fehler → Retry nach 60 s; Auth-Fehler
   (`coordinator.on_auth_failed`) → `flow.reauth()` + Notification, nach Neu-Login startet `on_configured`
   die gestoppten Coordinators wieder (`coordinator.start()` startet beendete Loops neu).
+  `_auth_failed` meldet nur einmal (`_login_required`), bis `start()` Tokens + Fahrzeugliste wieder erfolgreich holt:
+  Upstream versucht ein abgelehntes Refresh-Token alle 30 min erneut und ruft jedes Mal `async_start_reauth`
+  (in HA ein einziger offener Flow, bei uns sonst ERROR + Notification alle 30 min, live gesehen 13.–15.10.2026).
+  Auslöser dort: Refresh-Request lief nach 60 s in den Timeout, der Retry bekam `invalid_grant` — vermutlich hat
+  der IdP das Refresh-Token beim ersten Request schon rotiert (Antwort verloren). Upstream-Verhalten, nur Neu-Login hilft.
 - `app/main.py`: MQTT-Zugang aus `options.mqtt` oder `STELLANTIS_MQTT_*` (Supervisor-Service via `run`);
   ohne Broker läuft alles, nur ohne Publishing. `ADDON_VERSION` kommt aus `BUILD_VERSION` (Dockerfile).
 - Offline-Test: `tests/smoke_runtime.py`.

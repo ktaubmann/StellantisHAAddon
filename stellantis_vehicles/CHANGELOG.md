@@ -1,3 +1,9 @@
+## Unreleased
+
+- While a new login is required, the add-on reports it once: the error line and the
+  "login required" notification no longer repeat every 30 minutes (and a dismissed
+  notification stays dismissed) until the next successful login
+
 ## 0.2.4
 
 - Fix: restarting the add-on while the vehicle is charging no longer closes the recorded
