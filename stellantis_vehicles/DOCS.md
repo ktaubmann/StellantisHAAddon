@@ -27,8 +27,12 @@ Requires Home Assistant 2025.10 or newer (MQTT discovery with `default_entity_id
 Stellantis can invalidate the stored login (e.g. a token refresh that timed out on their
 side). With `oauth_mode: browser` and e-mail and password in the options, the add-on then
 signs in again by itself: right away, and after a failed attempt again after 15 minutes,
-1 hour, 6 hours and then daily. If Stellantis rejects the credentials, it stops trying (to
-avoid an account lock) and asks for a login on the ingress page. With `manual` mode or
+1 hour, 6 hours and then daily. The waiting times count from the last attempt, survive an
+add-on restart and start over after two days without an attempt. If Stellantis rejects the
+credentials or the account is disabled, it stops trying (to avoid an account lock) and asks
+for a login on the ingress page; it tries again once the e-mail or password in the options
+changes. A temporary refusal (account temporarily locked, failed challenge) is retried after
+6 hours at the earliest. With `manual` mode or
 without stored credentials, the ingress page shows the login form and a notification asks
 for a new login.
 

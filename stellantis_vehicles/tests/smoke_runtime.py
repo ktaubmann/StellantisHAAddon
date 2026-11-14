@@ -33,9 +33,13 @@ class RuntimeFakeStellantis(sb.FakeStellantis):
         self.vehicles_error = None
         self.status_error = None
         self.refreshes = 0
+        self.refresh_rejected = False
 
     async def scheduled_tokens_refresh(self):
         self.refreshes += 1
+        if self.refresh_rejected:
+            # Upstream swallows the rejected refresh token and requests reauth
+            self._entry.async_start_reauth(self._hass)
 
     async def get_user_vehicles(self, force=False):
         if self.vehicles_error:
@@ -150,7 +154,13 @@ async def main():
 
     print("automatic login with the credentials from the options")
     import oauth_browser.login as browser_login
-    from runtime import NOTIFY_REJECTED, NOTIFY_RELOGIN
+    import time
+    from runtime import (NOTIFY_BLOCKED, NOTIFY_REJECTED, NOTIFY_RELOGIN, RELOGIN_BLOCKED_STEP,
+                         RELOGIN_DELAYS, RELOGIN_STATE_FILE)
+
+    def saved_relogin_state():
+        with open(hass.config.path(RELOGIN_STATE_FILE), encoding="utf-8") as file:
+            return json.load(file)
     calls = []
     outcome = {"raise": None}
 
@@ -202,18 +212,68 @@ async def main():
     hass.config_entries.entry.async_start_reauth(hass)
     for _ in range(20):
         await asyncio.sleep(0)
-        if auto_runtime._relogin_task is not previous_task:
-            break
+    wait = auto_runtime._relogin_handle.when() - loop.time() if auto_runtime._relogin_handle else None
+    check(not calls and auto_runtime._relogin_task is previous_task and wait is not None
+          and RELOGIN_DELAYS[1] - 5 < wait <= RELOGIN_DELAYS[1],
+          f"login expired again shortly after a login: backoff continues, no immediate login ({wait})")
+    auto_runtime._relogin_handle.cancel()
+    auto_runtime._start_relogin()
     await auto_runtime._relogin_task
     check(len(calls) == 1 and auto_runtime._login_required and auto_runtime._relogin_handle is not None,
           "failed attempt schedules the next one")
-    check(auto_runtime._relogin_attempt == 2, "backoff advances")
+    check(auto_runtime._relogin_attempt == 2 and saved_relogin_state()["attempt"] == 2, "backoff advances and is stored")
     hass.config_entries.entry.async_start_reauth(hass)
     check(len(calls) == 1, "repeated reauth requests do not start extra logins")
 
+    print("automatic login: unexpected error keeps the attempts going")
+    real_relogin = auto_flow.relogin
+
+    async def broken_relogin():
+        raise KeyError("boom")
+
+    auto_flow.relogin = broken_relogin
+    auto_runtime._relogin_handle.cancel()
+    auto_runtime._start_relogin()
+    await auto_runtime._relogin_task
+    check(auto_runtime._relogin_handle is not None and auto_runtime._relogin_attempt == 3,
+          "next attempt scheduled after an unexpected error")
+    auto_flow.relogin = real_relogin
+
+    print("automatic login: new tokens but API error -> no further login")
+    outcome["raise"] = None
+    stellantis.vehicles_error = RuntimeError("api down")
+    calls.clear()
+    auto_runtime._relogin_handle.cancel()
+    auto_runtime._start_relogin()
+    await auto_runtime._relogin_task
+    check(len(calls) == 1 and auto_runtime._login_required and auto_runtime._relogin_handle is None
+          and auto_runtime._retry is not None, "start() retry pending, no extra browser login scheduled")
+    stellantis.vehicles_error = None
+    await auto_runtime.start()
+    check(not auto_runtime._login_required and auto_runtime._retry is None, "start() retry clears the login state")
+
+    print("rejected refresh token while the access token still works")
+    stellantis.refresh_rejected = True
+    calls.clear()
+    await auto_runtime.start()
+    check(auto_runtime._login_required and auto_runtime._relogin_handle is not None,
+          "start() keeps the login state its own token refresh reported")
+    stellantis.refresh_rejected = False
+
+    print("automatic login: temporary refusal waits for hours")
+    outcome["raise"] = OauthLoginRejected("Login endpoint returned error 403120; manual sign-in may be required",
+                                          public=True)
+    auto_runtime._relogin_handle.cancel()
+    auto_runtime._start_relogin()
+    await auto_runtime._relogin_task
+    wait = auto_runtime._relogin_handle.when() - loop.time() if auto_runtime._relogin_handle else 0
+    check(len(calls) == 1 and wait > RELOGIN_DELAYS[RELOGIN_BLOCKED_STEP] - 5, f"next attempt after hours ({wait})")
+    check(any(n["id"] == "reauth" and n["message"] == NOTIFY_BLOCKED for n in hass.notifications),
+          "notification says the login is refused for now")
+
     print("automatic login: rejection stops")
     outcome["raise"] = OauthLoginRejected("Login endpoint returned error 403042; manual sign-in may be required",
-                                          public=True)
+                                          public=True, permanent=True)
     auto_runtime._relogin_handle.cancel()
     auto_runtime._start_relogin()
     await auto_runtime._relogin_task
@@ -222,6 +282,34 @@ async def main():
           "notification asks for a manual login")
     check(auto_flow.step == STEP_LOGIN and "403042" in (auto_flow.error or ""), "login page shows the rejection")
     await auto_runtime.stop()
+
+    print("automatic login: rejection survives a restart")
+    check(saved_relogin_state()["rejected"] == auto_flow.credentials_id, "refused credentials stored")
+    calls.clear()
+    hass.notifications.clear()
+    restarted = Runtime(hass, stellantis, None, auto_flow, {"vehicles": []})
+    hass.config_entries.entry.async_start_reauth(hass)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    check(not calls and restarted._relogin_handle is None, "restart does not repeat the refused login")
+    check(any(n["id"] == "reauth" and n["message"] == NOTIFY_REJECTED for n in hass.notifications),
+          "notification still asks for a manual login")
+    await restarted.start()  # stands for a successful manual login
+    check(not restarted._login_required and saved_relogin_state()["rejected"] is None,
+          "successful login clears the stored rejection")
+    await restarted.stop()
+    new_flow = SetupFlow(hass, stellantis, dict(auto_options, password="new"), auto_configured)
+    changed = Runtime(hass, stellantis, None, new_flow, {"vehicles": []})
+    hass.config_entries.entry.async_start_reauth(hass)
+    wait = changed._relogin_handle.when() - loop.time() if changed._relogin_handle else None
+    check(wait is not None and wait > RELOGIN_DELAYS[RELOGIN_BLOCKED_STEP] - 60,
+          f"changed credentials are tried again, on the stored backoff ({wait})")
+    changed._relogin_last = time.time() - 3 * RELOGIN_DELAYS[-1]
+    changed._login_required = False
+    hass.config_entries.entry.async_start_reauth(hass)
+    wait = changed._relogin_handle.when() - loop.time()
+    check(changed._relogin_attempt == 0 and wait <= 0.01, "backoff starts over after two days without an attempt")
+    await changed.stop()
 
     print("retry on API error")
     state2 = {"vehicles": []}
