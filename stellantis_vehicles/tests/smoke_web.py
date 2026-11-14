@@ -170,9 +170,23 @@ async def main():
     print("reauth")
     await client.post("/reauth", allow_redirects=False)
     check(flow.step == STEP_LOGIN, "reauth -> login")
+    stellantis.fail_token = True
+    await client.post("/login", data={"code": "CODE123"}, allow_redirects=False)
+    await flow.wait()
+    check(flow.step == STEP_DONE, "failed voluntary reauth returns to the status page")
+    stellantis.fail_token = False
+    flow.reauth(required=True)
+    stellantis.fail_token = True
+    await client.post("/login", data={"code": "CODE123"}, allow_redirects=False)
+    await flow.wait()
+    check(flow.step == STEP_LOGIN, "failed required reauth keeps the login step")
+    stellantis.fail_token = False
+    sms_before, completed_before = stellantis.calls.count("get_otp_sms"), len(completed)
     await client.post("/login", data={"code": "CODE123"}, allow_redirects=False)
     await flow.wait()
     check(flow.step == STEP_DONE and hass.config_entries.entry.data["remote_commands"] is False, "reauth keeps disabled remote commands")
+    check(stellantis.calls.count("get_otp_sms") == sms_before, "no SMS when remote commands are switched off in the stored config")
+    check(len(completed) == completed_before + 1, "login with disabled remote commands restarts the runtime")
 
     print("browser mode without credentials")
     flow_b = SetupFlow(hass, stellantis, {**options, "oauth_mode": "browser", "email": "", "password": ""})

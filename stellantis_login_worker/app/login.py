@@ -45,6 +45,10 @@ LOGIN_BACKSTOP_S = LOGIN_DEADLINE_S + 15.0
 # the page's screen-set; keep waiting for the redirect within the deadline.
 # SAP Accounts REST API Error Codes and Messages (linked in DOCS.md).
 LOGIN_REJECTION_CODES = frozenset({401021, 401022, 403041, 403042, 403044, 403120})
+# The subset that says "these credentials / this account will not work":
+# account disabled, invalid login or password, underage user. The others
+# (challenge failed, account temporarily locked) can pass later unchanged.
+LOGIN_PERMANENT_CODES = frozenset({403041, 403042, 403044})
 GENERIC_LOGIN_ERROR = "Login did not complete. Check the official app or sign in manually."
 
 
@@ -68,8 +72,25 @@ class OauthBrowserError(RuntimeError):
 
 
 class OauthLoginRejected(OauthBrowserError):
-    """The provider refused the credentials (documented rejection code);
-    retrying with the same credentials only risks an account lock."""
+    """The provider refused the login (documented rejection code).
+
+    ``permanent``: the credentials or the account itself were refused, so
+    retrying with the same credentials only risks an account lock. Otherwise
+    the refusal is temporary (lock, challenge) and a much later retry may pass.
+    """
+
+    def __init__(self, message: str, public: bool = False, permanent: bool = False) -> None:
+        super().__init__(message, public)
+        self.permanent = permanent
+
+
+class _Rejection(str):
+    """Fixed public rejection message that also carries ``permanent``."""
+
+    def __new__(cls, message: str, permanent: bool):
+        self = super().__new__(cls, message)
+        self.permanent = permanent
+        return self
 
 
 def public_login_error(error: Exception) -> str:
@@ -98,7 +119,8 @@ async def _login_response_failure(response) -> str | None:
     if type(code) is int and 0 < code <= 999999:
         _LOGGER.debug("accounts.login numeric status %d", code)
     if type(code) is int and code in LOGIN_REJECTION_CODES:
-        return f"Login endpoint returned error {code}; manual sign-in may be required"
+        return _Rejection(f"Login endpoint returned error {code}; manual sign-in may be required",
+                          permanent=code in LOGIN_PERMANENT_CODES)
     return None
 
 
@@ -146,7 +168,8 @@ async def _wait_login_result(code, failure, consent, timeout_s):
     try:
         while True:
             if failure.done():
-                raise OauthLoginRejected(failure.result(), public=True)
+                reason = failure.result()
+                raise OauthLoginRejected(reason, public=True, permanent=getattr(reason, "permanent", False))
             if code.done():
                 return code.result()
             if consent in watchers and consent.done():
@@ -255,6 +278,7 @@ async def fetch_oauth_code(oauth_url: str, email: str, password: str,
     def on_navigated(frame) -> None:
         seen("framenavigated", frame.url)
         if "failedlogin" in frame.url.lower() and not failure_future.done():
+            # Also the outcome of bot detection, so not proof of bad credentials
             failure_future.set_result("Identity provider rejected the login")
 
     def step_ms() -> int:

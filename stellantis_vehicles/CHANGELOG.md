@@ -1,3 +1,27 @@
+## 0.2.7
+
+Fixes for the automatic login from 0.2.6, found in a code review.
+
+- Credentials that Stellantis refused are remembered across add-on restarts: a restart no
+  longer repeats the refused login. New credentials in the options are tried again.
+- The waiting times between automatic logins (15 minutes, 1 hour, 6 hours, daily) now
+  count from the last attempt and survive restarts. They only start over after two days
+  without an attempt, so a login that expires again right away no longer causes one
+  browser login after the other.
+- A temporary refusal (account temporarily locked, failed challenge, or the identity
+  provider's generic failure page) no longer stops the automatic login for good: the next
+  attempt follows after 6 hours at the earliest. Only refused credentials or a disabled
+  account stop it.
+- No extra browser login when the new login worked but the Stellantis API was not
+  reachable right after it; the vehicle list is simply retried.
+- A rejected refresh token at start-up is no longer forgotten when the old access token
+  still worked for the vehicle list.
+- Logging in on the ingress page while remote commands are switched off now restarts
+  polling right away and no longer sends an SMS code nobody asked for.
+- "Sign in again" on the status page returns to the status page when the login fails
+  (the existing login keeps working).
+- An unexpected error during an automatic login no longer ends the attempts.
+
 ## 0.2.6
 
 - When Stellantis invalidates the login, the add-on signs in again by itself with the

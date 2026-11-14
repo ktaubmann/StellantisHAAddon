@@ -57,7 +57,7 @@ Container zusammenfasst. Fahrzeuge kommen per MQTT Discovery nach HA.
 - Stolpersteine: `hass_notify()` schweigt ohne `notifications: true` in der Stored Config → Flow persistiert
   die Defaults im Konstruktor; `get_otp_code()` macht `os.mkdir` auf `<config>/.storage/<domain>` →
   `.storage` wird vor dem OTP-Schritt angelegt; `reconfigure` setzt `remote_commands=False`, daher `_force_otp`.
-- Offline-Test: `tests/smoke_web.py` (aiohttp-TestClient, Fake-Client, 44 Checks).
+- Offline-Test: `tests/smoke_web.py` (aiohttp-TestClient, Fake-Client, 48 Checks).
 
 ## Runtime (Schritt 3, fertig)
 - `app/runtime.py`: `Runtime.start()` = Rest von Upstream-`async_setup_entry`: `scheduled_tokens_refresh` →
@@ -75,7 +75,17 @@ Container zusammenfasst. Fahrzeuge kommen per MQTT Discovery nach HA.
   `RELOGIN_DELAYS` (0, 15 min, 1 h, 6 h, dann täglich). `OauthLoginRejected` (dokumentierte Gigya-Codes, in beiden
   `login.py`-Kopien) stoppt die Versuche (Kontosperre vermeiden). Erfolg: `start()` löscht `_login_required`,
   bricht den Timer ab, entfernt die Notification. Fernbefehle, die Upstream wegen des Auth-Fehlers abgeschaltet hat,
-  bleiben aus (SMS nötig). `SetupFlow._reauth_pending` hält den Login-Schritt offen, bis ein Login gelingt
+  bleiben aus (SMS nötig). Seit 0.2.7: Zähler, Zeitpunkt des letzten Versuchs und abgelehnte Zugangsdaten
+  (`flow.credentials_id`, SHA-256) liegen in `/data/relogin_state.json` — Neustart wiederholt weder einen abgelehnten
+  Login noch beginnt der Backoff neu (Reset erst nach `RELOGIN_RESET_S` = 2 Tage ohne Versuch; Wartezeit zählt ab
+  dem letzten Versuch). `OauthLoginRejected.permanent` nur für 403041/403042/403044 (`LOGIN_PERMANENT_CODES`) →
+  Ergebnis `rejected` (Stopp); alle anderen Ablehnungen inkl. `#failedLogin` → `blocked` (weiter ab 6-h-Stufe).
+  `start()` löscht `_login_required` nicht, wenn der eigene Token-Refresh gerade einen Auth-Fehler gemeldet hat
+  (`_auth_failures`-Zähler). Login `ok` + API-Fehler → kein weiterer Browser-Login, `start()`-Retry genügt.
+  `flow.reauth(required=True)` nur aus der Runtime; der Button „Neu anmelden“ setzt `_reauth_pending` nicht.
+  `_finish_login` fragt die SMS nur an, wenn `_derive_step()` OTP ergibt (gespeichertes `remote_commands: false` → fertig).
+  Offen aus dem Review: MQTT/OTP-Auth-Fehler laufen über denselben `_auth_failed`-Pfad und lösen einen (nutzlosen)
+  OAuth-Login aus. `SetupFlow._reauth_pending` hält den Login-Schritt offen, bis ein Login gelingt
   (sonst fiel ein fehlgeschlagener Versuch wegen des noch gespeicherten toten Tokens auf „done“ zurück).
 - `app/main.py`: MQTT-Zugang aus `options.mqtt` oder `STELLANTIS_MQTT_*` (Supervisor-Service via `run`);
   ohne Broker läuft alles, nur ohne Publishing. `ADDON_VERSION` kommt aus `BUILD_VERSION` (Dockerfile).
@@ -170,6 +180,9 @@ Import; Bridge prüft `_mqtt_connected` wie Upstream. Offline-Tests grün, live 
 0.2.5 (15.10.2026, nur stellantis_vehicles): „Neu-Login nötig“ wird nur einmal gemeldet statt alle 30 min.
 0.2.6 (15.10.2026, nur stellantis_vehicles): automatischer Neu-Login mit den Zugangsdaten aus den Optionen
 (browser-Modus), Backoff, Stopp bei Ablehnung. Live noch nicht gelaufen.
+0.2.7 (14.11.2026, nur stellantis_vehicles): Review-Fixes zum automatischen Neu-Login (persistenter Backoff und
+Ablehnungsstatus, temporäre vs. dauerhafte Ablehnung, hängende Zustände im Flow). Worker-`login.py` synchron gehalten,
+ohne Versionssprung (Verhalten dort unverändert). Live noch nicht gelaufen.
 
 ## Nächste Schritte
 6. Auf dem Pi: Add-on-Store → Repositories →
