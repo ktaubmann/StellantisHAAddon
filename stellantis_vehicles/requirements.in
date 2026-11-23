@@ -1,4 +1,4 @@
-aiohttp>=3.9
+aiohttp>=3.14.5
 paho-mqtt>=1.6,<2
 pycryptodome==3.*
 Pillow==12.*
